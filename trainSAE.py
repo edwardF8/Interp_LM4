@@ -28,9 +28,12 @@ sae_mult=16
 device = pick_device()
 dtype = torch.float32
 
+subModelPath = "runs/bioS_N-Bd_final_grid/20260520-134455/grid/grid-L4-H6/final"
+MODEL_DIR  = Path(f"../Training_On_LM4/{subModelPath}")
 
-MODEL_DIR  = Path("../Training_On_LM4/runs/BD_llama_6heads_1epoch_4layers")
-DATA_DIR   = Path("cache/BD_llama_inital")
+subDataDir = "cache/bioS_N-Bd_final_grid"
+DATA_DIR   = Path(f"../Training_On_LM4/{subDataDir}")
+
 REMAP_PATH = DATA_DIR / "old_to_new.json"
 TOKENS_PATH = DATA_DIR / "bios_postreduce.bin"
 SAE_seed = 0
