@@ -132,7 +132,7 @@ if __name__ == "__main__":
 
     # saeName is rebuilt the same way trainSAE.py builds it - if you retrain
     # with more epochs, bump `epochs` here to point at the new run.
-    sae_mult, epochs, n_examples = 16, 4, 10_000
+    sae_mult, epochs, n_examples = 8, 30, 10_000
     saeName  = f"bioS_NM_BD_layer_2_{sae_mult}_{epochs}_{n_examples}"
     SAE_PATH = f"sae/{saeName}/final"
     HOOK     = "blocks.1.hook_mlp_out"
