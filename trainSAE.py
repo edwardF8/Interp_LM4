@@ -22,9 +22,10 @@ def pick_device() -> str:
 
 ### SAMPLER Hyperparameters
 n_examples = 10_000      
-epochs     = 10
+epochs     = 30
 context_size  = 512
-sae_mult=16
+sae_mult=8
+
 device = pick_device()
 dtype = torch.float32
 
@@ -101,7 +102,7 @@ cfg = LanguageModelSAERunnerConfig(
         pre_act_loss_coefficient=3e-6,
         # Anthropic's settings assume normalized activations
         normalize_activations="expected_average_only_in",
-        l0_warm_up_steps= (total_training_steps//50),
+        l0_warm_up_steps= (total_training_steps//10),
         d_in=model.cfg.d_model, # must match your hook point
         d_sae=model.cfg.d_model * sae_mult,
     ),
@@ -127,10 +128,10 @@ cfg = LanguageModelSAERunnerConfig(
     adam_beta2=0.999,
     lr_scheduler_name="constant",  # controls how the LR warmup / decay works
     lr_warm_up_steps= (total_training_steps//50),  # avoids large number of initial dead features
-    lr_decay_steps=(total_training_steps//4),  # helps avoid overfitting
+    lr_decay_steps=(total_training_steps//20),  # helps avoid overfitting
     # Training hyperparameters (resampling)
-    feature_sampling_window=2000,  # how often we resample dead features
-    dead_feature_window=1000,  # size of window to assess whether a feature is dead
+    feature_sampling_window=1000,  # how often we resample dead features
+    dead_feature_window=500,  # size of window to assess whether a feature is dead
     dead_feature_threshold=1e-4,  # threshold for classifying feature as dead, over window
     # Logging / evals
     logger=LoggingConfig(
