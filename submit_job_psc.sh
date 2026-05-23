@@ -57,7 +57,13 @@ echo "Started: $(date)"
 nvidia-smi || true
 echo
 
-python -u "$@"
+# If the first arg is a .py file, run it with `python -u`. Otherwise (e.g.
+# `wandb agent <id>`), exec the command as-is.
+if [[ "$1" == *.py ]]; then
+    python -u "$@"
+else
+    "$@"
+fi
 
 echo
 echo "Finished: $(date)"

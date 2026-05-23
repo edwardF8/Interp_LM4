@@ -98,8 +98,9 @@ eval_tokens = torch.tensor(np.array(eval_rows), dtype=torch.long, device=device)
 # ============================================================================
 
 SWEEP_CONFIG = {
-    "method": "grid",
-    "metric": {"name": "final_eval/ce_recovered", "goal": "maximize"},
+    "program": "trainSAE.py",
+    "method":  "grid",
+    "metric":  {"name": "final_eval/ce_recovered", "goal": "maximize"},
     "parameters": {
         "l0_coefficient": {"values": [2.0, 5.0, 10.0]},
         "sae_mult":       {"values": [8, 16]},
@@ -217,8 +218,11 @@ def train_one_run():
 if __name__ == "__main__":
     import sys
     if "--sweep" in sys.argv:
+        # Register the sweep and print the ID. Launch trials with the CLI
+        # agent so each runs in a fresh subprocess (sae_lens uses signal.signal,
+        # which fails inside wandb.agent's worker thread).
         sweep_id = wandb.sweep(SWEEP_CONFIG, project="interpLM4")
-        print(f"Sweep registered: {sweep_id}")
-        wandb.agent(sweep_id, function=train_one_run)
+        print(f"\nSweep registered: {sweep_id}")
+        print(f"Launch with:  wandb agent {sweep_id}")
     else:
         train_one_run()
