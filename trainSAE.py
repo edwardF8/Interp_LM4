@@ -21,7 +21,7 @@ def pick_device() -> str:
     return "cpu"
 
 ### SAMPLER Hyperparameters
-n_examples = 10_000      # the "portion"  -> 5.12M tokens
+n_examples = 10_000      
 epochs     = 10
 context_size  = 512
 sae_mult=16
@@ -155,24 +155,3 @@ runner = LanguageModelSAETrainingRunner(
 )
 
 sae = runner.run()
-
-# ---------------------------------------------------------------------------
-# Post-training eval: quick L0 / explained-variance / CE-recovered report on a
-# held-out sample, so every run self-reports whether the SAE is worth keeping.
-# Eval logic lives in evalSAE.py; run `python evalSAE.py` to re-check any
-# already-trained SAE without retraining.
-# ---------------------------------------------------------------------------
-from evalSAE import sae_eval, print_report, load_sae
-
-# Load the SAE we just saved (an inference SAE) rather than the in-memory
-# training object, so the eval path matches `python evalSAE.py` exactly.
-eval_sae = load_sae(output_path, device)
-
-# Held-out sample: a different subset seed -> identity/template packing the
-# SAE never saw during training.
-eval_subset = DiverseBioSubset(sampler, tokenizer, context_size=context_size,
-                               seed=SAE_seed + 1)
-eval_rows   = eval_subset.to_hf_dataset(64, verbose=False)["input_ids"]
-eval_tokens = torch.tensor(np.array(eval_rows), dtype=torch.long, device=device)
-
-print_report(sae_eval(model, eval_sae, eval_tokens, cfg.hook_name))
