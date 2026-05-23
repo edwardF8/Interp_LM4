@@ -17,3 +17,6 @@ wandb/*
 
 data/*
 model/*
+
+# SAE dashboard HTML output + cached corpora
+sae_runs/**/dashboards/
