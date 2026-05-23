@@ -132,3 +132,49 @@ def make_dashboard(
     out_html = out_dir / "dashboard.html"
     save_feature_centric_vis(sae_vis_data=sae_vis_data, filename=str(out_html))
     return out_html
+
+
+def steer(
+    model,
+    sae,
+    tokenizer,
+    text: str,
+    feature_idx: int,
+    scale: float,
+    hook_name: str,
+) -> dict:
+    """Boost feature `feature_idx`'s decoder direction by `scale` at `hook_name`.
+
+    Encodes `text`, runs a clean forward and a steered forward, and returns
+    the top-5 next-token predictions from each plus the top-5 tokens whose
+    logit *gained* the most under steering.
+    """
+    device = next(model.parameters()).device
+    ids = [tokenizer.eos_token_id] + tokenizer.encode(text)
+    input_tokens = torch.tensor([ids], device=device)
+
+    # sae.W_dec is [d_sae, d_in]; pick row, broadcast across the sequence.
+    direction = sae.W_dec[feature_idx].to(device)
+
+    def steering_hook(act, hook):
+        return act + scale * direction
+
+    with torch.no_grad():
+        clean_logits = model(input_tokens)[0, -1]               # [d_vocab]
+        steered_logits = model.run_with_hooks(
+            input_tokens, fwd_hooks=[(hook_name, steering_hook)],
+        )[0, -1]
+
+    def topk_tokens(logits, k=5):
+        vals, idxs = logits.topk(k)
+        return [
+            {"token_id": int(i), "text": tokenizer.decode([int(i)]), "logit": float(v)}
+            for v, i in zip(vals, idxs)
+        ]
+
+    delta = steered_logits - clean_logits
+    return {
+        "clean_top_tokens":   topk_tokens(clean_logits),
+        "steered_top_tokens": topk_tokens(steered_logits),
+        "delta_logits":       topk_tokens(delta),
+    }
