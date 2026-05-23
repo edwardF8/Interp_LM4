@@ -1,0 +1,18 @@
+program: trainSAE.py
+method: grid
+metric:
+  name: final_eval/ce_recovered
+  goal: maximize
+parameters:
+  l0_coefficient:
+    values: [2.0, 5.0, 10.0]
+  sae_mult:
+    values: [8, 16]
+  lr:
+    values: [3e-5, 1e-4]
+  epochs:
+    value: 50
+early_terminate:
+  type: hyperband
+  min_iter: 5
+  eta: 3

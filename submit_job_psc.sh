@@ -57,7 +57,7 @@ echo "Started: $(date)"
 nvidia-smi || true
 echo
 
-python -u $1
+python -u "$@"
 
 echo
 echo "Finished: $(date)"

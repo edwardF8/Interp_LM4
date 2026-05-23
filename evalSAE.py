@@ -126,8 +126,8 @@ if __name__ == "__main__":
     SAE_seed     = 0
     n_eval       = 64                       # held-out sequences (64 x 512 tok)
 
-    MODEL_DIR  = Path("../Training_On_LM4/runs/BD_llama_6heads_1epoch_4layers")
-    DATA_DIR   = Path("cache/BD_llama_inital")
+    MODEL_DIR  = Path("../Training_On_LM4/runs/bioS_N-Bd_final_grid/20260520-134455/grid/grid-L4-H6/final/")
+    DATA_DIR   = Path("../Training_On_LM4/cache/bioS_N-Bd_final_grid")
     REMAP_PATH = DATA_DIR / "old_to_new.json"
 
     # saeName is rebuilt the same way trainSAE.py builds it - if you retrain
