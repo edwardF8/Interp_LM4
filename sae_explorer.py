@@ -11,6 +11,7 @@ Three public functions:
 """
 from __future__ import annotations
 
+import copy
 from pathlib import Path
 from typing import Iterable, Sequence
 
@@ -68,3 +69,66 @@ def build_index_corpus(
         torch.save(tokens, cache_path)
 
     return tokens
+
+
+def _attach_tokenizer(model, tokenizer) -> None:
+    """sae_dashboard reaches for model.tokenizer; make sure ours is there."""
+    if getattr(model, "tokenizer", None) is None:
+        model.tokenizer = tokenizer
+
+
+def make_dashboard(
+    model,
+    sae,
+    tokens: torch.Tensor,
+    tokenizer,
+    out_dir: str | Path,
+    hook_name: str,
+    features: Iterable[int] | None = None,
+    minibatch_size_tokens: int = 128,
+    minibatch_size_features: int = 256,
+    verbose: bool = True,
+    clone_sae: bool = True,
+) -> Path:
+    """Run sae_dashboard against (model, sae, tokens) and write the HTML dashboard.
+
+    Writes a single self-contained HTML file with a dropdown navigator over the
+    requested features. Open it in a browser. Returns the path.
+
+    `features=None` runs every feature in the SAE; pass a list/range for a subset.
+
+    `clone_sae=True` (default) deepcopies the SAE before passing it to the runner,
+    since SaeVisRunner calls fold_W_dec_norm() in-place. Set to False if you don't
+    care about the SAE being mutated.
+    """
+    from sae_dashboard.sae_vis_runner import SaeVisRunner
+    from sae_dashboard.sae_vis_data import SaeVisConfig
+    from sae_dashboard.data_writing_fns import save_feature_centric_vis
+
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    _attach_tokenizer(model, tokenizer)
+
+    if features is None:
+        features = list(range(sae.cfg.d_sae))
+    else:
+        features = list(features)
+
+    sae_for_dashboard = copy.deepcopy(sae) if clone_sae else sae
+
+    device = str(next(model.parameters()).device)
+    cfg = SaeVisConfig(
+        hook_point=hook_name,
+        features=features,
+        minibatch_size_tokens=minibatch_size_tokens,
+        minibatch_size_features=minibatch_size_features,
+        device=device,
+        verbose=verbose,
+        ignore_tokens={tokenizer.pad_token_id},
+    )
+    runner = SaeVisRunner(cfg)
+    sae_vis_data = runner.run(encoder=sae_for_dashboard, model=model, tokens=tokens)
+
+    out_html = out_dir / "dashboard.html"
+    save_feature_centric_vis(sae_vis_data=sae_vis_data, filename=str(out_html))
+    return out_html

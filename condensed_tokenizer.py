@@ -118,3 +118,14 @@ class CondensedTokenizer:
 
     def __len__(self) -> int:
         return self.vocab_size
+
+    @property
+    def vocab(self) -> dict[str, int]:
+        """Token string -> reduced-vocab id. Required by sae_dashboard's
+        get_decode_html_safe_fn."""
+        gpt2_vocab = self.gpt2.get_vocab()  # str -> gpt2_id
+        return {
+            tok_str: self.old_to_new[gpt2_id]
+            for tok_str, gpt2_id in gpt2_vocab.items()
+            if gpt2_id in self.old_to_new
+        }
