@@ -127,7 +127,13 @@ def train_one_run():
     Anything not set falls through to DEFAULTS.
     """
     wandb.init(project="interpLM4")
-    sweep_cfg = wandb.config
+    # Capture identifiers so we can re-attach for eval logging after sae_lens
+    # calls wandb.finish() inside runner.run().
+    run_id      = wandb.run.id
+    run_entity  = wandb.run.entity
+    run_project = wandb.run.project
+    sweep_id    = wandb.run.sweep_id   # None when this isn't a sweep trial
+    sweep_cfg   = wandb.config
 
     n_examples     = sweep_cfg.get("n_examples",     DEFAULTS["n_examples"])
     epochs         = sweep_cfg.get("epochs",         DEFAULTS["epochs"])
@@ -136,10 +142,16 @@ def train_one_run():
     l0_coefficient = sweep_cfg.get("l0_coefficient", DEFAULTS["l0_coefficient"])
     lr             = sweep_cfg.get("lr",             DEFAULTS["lr"])
 
-    saeName        = f"bioS_NM_BD_layer_2_{sae_mult}_{epochs}_{n_examples}"
-    SAE_RUN_DIR    = f"sae/{saeName}"
+    # Trial name encodes the swept hyperparameters so trials within a sweep
+    # never collide on disk. Use :g for compact float formatting.
+    saeName = (f"mult{sae_mult}_l0{l0_coefficient:g}_lr{lr:g}"
+               f"_ep{epochs}_n{n_examples}")
+    # Group all trials of a sweep into one folder so the layout mirrors wandb;
+    # solo runs go under a sibling `standalone/` folder for the same tidiness.
+    sweep_folder    = f"sweep-{sweep_id}" if sweep_id else "standalone"
+    SAE_RUN_DIR     = f"sae/{sweep_folder}/{saeName}"
     checkpoint_path = f"{SAE_RUN_DIR}/checkpoints"
-    output_path    = f"{SAE_RUN_DIR}/final"
+    output_path     = f"{SAE_RUN_DIR}/final"
 
     subset = DiverseBioSubset(sampler, tokenizer, context_size=context_size, seed=SAE_seed)
     sae_dataset = subset.to_hf_dataset(n_examples)
@@ -205,10 +217,15 @@ def train_one_run():
     metrics = sae_eval(model, sae, eval_tokens, cfg.hook_name)
     print_report(metrics)
 
-    if wandb.run is not None:
-        payload = {f"final_eval/{k}": v for k, v in metrics.items()}
-        wandb.log(payload)
-        wandb.run.summary.update(payload)
+    # sae_lens finished the run inside runner.run(); resume it to log eval.
+    if wandb.run is None:
+        wandb.init(
+            project=run_project, entity=run_entity, id=run_id, resume="allow"
+        )
+    payload = {f"final_eval/{k}": v for k, v in metrics.items()}
+    wandb.log(payload)
+    wandb.run.summary.update(payload)
+    wandb.finish()
 
 
 # ============================================================================
