@@ -121,10 +121,11 @@ SWEEP_CONFIG = {
 def train_one_run():
     """One SAE training run + held-out eval, logged to the current wandb run.
 
-    Caller must have called wandb.init() (or be inside wandb.agent, which does
-    it automatically). Sweep parameters come from wandb.config; anything not
-    set falls through to DEFAULTS.
+    Calls wandb.init() itself: under wandb.agent this picks up the trial's
+    swept config; standalone runs start a fresh run with no overrides.
+    Anything not set falls through to DEFAULTS.
     """
+    wandb.init(project="interpLM4")
     sweep_cfg = wandb.config
 
     n_examples     = sweep_cfg.get("n_examples",     DEFAULTS["n_examples"])
@@ -220,5 +221,4 @@ if __name__ == "__main__":
         print(f"Sweep registered: {sweep_id}")
         wandb.agent(sweep_id, function=train_one_run)
     else:
-        wandb.init(project="interpLM4")
         train_one_run()
