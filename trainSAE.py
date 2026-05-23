@@ -215,14 +215,25 @@ def train_one_run():
 # Entry point: single run, or launch the sweep.
 # ============================================================================
 
+def _patch_signal_for_worker_threads():
+    """sae_lens installs a SIGINT handler in runner.run(), which Python only
+    permits in the main thread. wandb.agent runs trials in worker threads,
+    so we wrap signal.signal to no-op when called off the main thread."""
+    import signal, threading
+    _real = signal.signal
+    def _safe(signum, handler):
+        if threading.current_thread() is threading.main_thread():
+            return _real(signum, handler)
+        return None
+    signal.signal = _safe
+
+
 if __name__ == "__main__":
     import sys
     if "--sweep" in sys.argv:
-        # Register the sweep and print the ID. Launch trials with the CLI
-        # agent so each runs in a fresh subprocess (sae_lens uses signal.signal,
-        # which fails inside wandb.agent's worker thread).
+        _patch_signal_for_worker_threads()
         sweep_id = wandb.sweep(SWEEP_CONFIG, project="interpLM4")
         print(f"\nSweep registered: {sweep_id}")
-        print(f"Launch with:  wandb agent {sweep_id}")
+        wandb.agent(sweep_id, function=train_one_run)
     else:
         train_one_run()
