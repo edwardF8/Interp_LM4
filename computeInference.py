@@ -24,12 +24,7 @@ from transformer_lens.loading_from_pretrained import convert_llama_weights
 from bio_sampler import BioSampler
 from condensed_tokenizer import CondensedTokenizer
 from evalSAE import load_sae
-from sae_explorer import (
-    build_index_corpus,
-    collect_activations,
-    feature_activation_stats,
-    make_dashboard,
-)
+from sae_explorer import build_index_corpus, feature_activation_stats, make_dashboard
 
 
 # ============================================================================
@@ -154,7 +149,7 @@ def main() -> None:
     )
 
     # Per-feature stats over the full corpus — small file (~50 KB), drives the
-    # notebook's Overview histogram cell.
+    # notebook's Overview histogram cell and the activations-per-latent bar plot.
     print(f"[stats]   computing per-feature stats over {tokens.shape[0]} bios")
     stats = feature_activation_stats(model, sae, tokens.to(device), HOOK_NAME)
     stats_path = OUT_DIR / "feature_stats.pt"
@@ -162,22 +157,11 @@ def main() -> None:
     n_dead = int((stats["activation_count"] == 0).sum())
     print(f"          dead features: {n_dead} / {sae.cfg.d_sae}  ->  {stats_path}")
 
-    # Raw activations for a small sample of bios — drives the heatmap cell.
-    # Saved as float16 to keep the download manageable.
-    sample_n = min(200, len(tokens))
-    print(f"[sample]  collecting activations for {sample_n} bios (float16)")
-    sample_acts = collect_activations(model, sae, tokens[:sample_n].to(device), HOOK_NAME).to(torch.float16)
-    sample_path = OUT_DIR / "sample_activations.pt"
-    torch.save(sample_acts, sample_path)
-    size_mb = sample_acts.numel() * 2 / 1e6
-    print(f"          shape: {tuple(sample_acts.shape)}, {size_mb:.0f} MB  ->  {sample_path}")
-
     print()
     print(f"DONE: {out_html}")
     print()
     print("To view on your laptop:")
     print(f"  scp -r friedmae@bridges2:{OUT_DIR.resolve()} <local-repo>/inference/")
-    print(f"  # then run the notebook's Overview, Option A, and heatmap cells")
 
 
 if __name__ == "__main__":
