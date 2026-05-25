@@ -216,6 +216,29 @@ def steer(
     }
 
 
+def collect_activations(
+    model,
+    sae,
+    tokens: torch.Tensor,
+    hook_name: str,
+    batch_size: int = 8,
+) -> torch.Tensor:
+    """Run the SAE over `tokens` and return the full activation tensor.
+
+    Returns a `[N*T, d_sae]` float tensor on CPU. Memory: 4 bytes per cell,
+    so 200 bios x 64 tokens x 6144 features ~ 300 MB (or ~150 MB as float16).
+    """
+    device = next(model.parameters()).device
+    chunks: list[torch.Tensor] = []
+    with torch.no_grad():
+        for i in range(0, len(tokens), batch_size):
+            batch = tokens[i:i + batch_size].to(device)
+            _, cache = model.run_with_cache(batch, names_filter=hook_name)
+            feats = sae.encode(cache[hook_name])              # [B, T, d_sae]
+            chunks.append(feats.reshape(-1, sae.cfg.d_sae).cpu().float())
+    return torch.cat(chunks, dim=0)
+
+
 def feature_activation_stats(
     model,
     sae,
