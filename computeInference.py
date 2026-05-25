@@ -1,25 +1,19 @@
 """Generate the Neuronpedia-style HTML dashboard for a trained SAE.
 
-Heavy compute (model + SAE forward over ~100k bios). Meant to run on a GPU
-machine where the model + bios + SAE are reachable, not on a laptop. Writes
-a self-contained HTML file under `inference/<sae_name>/`. Copy that directory
-to your laptop and open `dashboard.html` in a browser.
+Heavy compute (model + SAE forward over ~100k bios). Paths below are
+hardcoded to the Bridges-2 layout so this script runs under sbatch with
+no CLI arguments. Edit the CONFIG block when you want a different SAE
+or a feature subset.
 
-Local laptop (paths match the notebook defaults):
-    python computeInference.py sae_runs/sweep-n66crzzw/mult16_l05_lr3e-05_ep50_n10000/final
+Submit:
+    sbatch submit_job_psc.sh computeInference.py
 
-Bridges-2 HPC:
-    python computeInference.py \\
-        /jet/home/friedmae/Interp_LM4/sae/sweep-n66crzzw/mult16_l05_lr3e-05_ep50_n10000/final \\
-        --model-dir /jet/home/friedmae/data_storage/LM4_Results/runResults/bioS_N-Bd_final_grid/20260520-134455/grid/grid-L4-H6/final \\
-        --data-dir  /jet/home/friedmae/data_storage/LM4_Results/Data/bioS_N-Bd_final_grid
-
-Iterate fast on a feature subset:
-    python computeInference.py <sae_path> --features 0-99
+Then on your laptop:
+    scp -r friedmae@bridges2:Interp_LM4/inference ~/Code/Project\\ Code/CRL-Interp/Interp_LM4/
+and open the notebook's Option A cell.
 """
 from __future__ import annotations
 
-import argparse
 from pathlib import Path
 
 import torch
@@ -33,11 +27,39 @@ from evalSAE import load_sae
 from sae_explorer import build_index_corpus, make_dashboard
 
 
-# Local laptop defaults — match the paths set in analyzingSAE.ipynb. Override
-# on HPC via --model-dir / --data-dir.
-DEFAULT_MODEL_DIR = Path("model/BD_llama_6heads_1epoch_4layers")
-DEFAULT_DATA_DIR = Path("data/BD_llama_inital")
-DEFAULT_HOOK = "blocks.1.hook_mlp_out"
+# ============================================================================
+# CONFIG — edit these to point at a different SAE / data / model.
+# ============================================================================
+
+# Bridges-2 paths. The model + bios live in the data_storage area; the SAE
+# checkpoint is under the project's sae/ tree.
+MODEL_DIR = Path("/jet/home/friedmae/data_storage/LM4_Results/runResults/bioS_N-Bd_final_grid/20260520-134455/grid/grid-L4-H6/final")
+DATA_DIR  = Path("/jet/home/friedmae/data_storage/LM4_Results/Data/bioS_N-Bd_final_grid")
+SAE_PATH  = Path("/jet/home/friedmae/Interp_LM4/sae/sweep-n66crzzw/mult16_l05_lr3e-05_ep50_n10000/final")
+
+HOOK_NAME = "blocks.1.hook_mlp_out"
+
+# Index corpus shape. 2 templates * 50k people = 100k rows; 64 tokens covers
+# every bio with margin.
+N_PER_PERSON = 2
+CONTEXT_SIZE = 64
+
+# Which features to render. None = every feature in the SAE (~6144 for
+# d_model=384 * sae_mult=16). For fast iteration set to e.g. list(range(100))
+# or [42, 137, 999].
+FEATURES: list[int] | None = None
+
+# sae_dashboard internals — tweak if you OOM.
+MINIBATCH_TOKENS = 128
+MINIBATCH_FEATURES = 256
+
+SEED = 0
+
+# Output goes to inference/<sae_name>/. We strip the trailing "final" so the
+# directory name is the SAE's hyperparameter string.
+OUT_DIR = Path("inference") / (SAE_PATH.parent.name if SAE_PATH.name == "final" else SAE_PATH.name)
+
+# ============================================================================
 
 
 def pick_device() -> str:
@@ -48,28 +70,8 @@ def pick_device() -> str:
     return "cpu"
 
 
-def parse_features(spec: str) -> list[int] | None:
-    """'all' -> None; '0-99' -> [0..99]; '0,5,10' -> [0,5,10]."""
-    if spec == "all":
-        return None
-    if "-" in spec and "," not in spec:
-        lo, hi = spec.split("-")
-        return list(range(int(lo), int(hi) + 1))
-    return [int(x) for x in spec.split(",")]
-
-
-def derive_out_dir(sae_path: Path) -> Path:
-    """inference/<sae_path.parent.name if name == 'final' else sae_path.name>."""
-    label = sae_path.parent.name if sae_path.name == "final" else sae_path.name
-    return Path("inference") / label
-
-
 def build_model(model_dir: Path, device: str) -> HookedTransformer:
-    """Load the HF Llama checkpoint and convert to HookedTransformer.
-
-    Same wiring as trainSAE.py / analyzingSAE.ipynb — kept self-contained so
-    this script doesn't import either of those.
-    """
+    """Load HF Llama and convert to HookedTransformer. Same wiring as trainSAE.py."""
     hf_model = LlamaForCausalLM.from_pretrained(model_dir, torch_dtype=torch.float32).eval()
     hf_cfg = hf_model.config
     tl_cfg = HookedTransformerConfig(
@@ -99,95 +101,59 @@ def build_model(model_dir: Path, device: str) -> HookedTransformer:
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(
-        description=__doc__,
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-    ap.add_argument("sae_path", type=Path,
-                    help="Path to SAE checkpoint dir (containing config + weights).")
-    ap.add_argument("--model-dir", type=Path, default=DEFAULT_MODEL_DIR,
-                    help=f"HF model dir. Default: {DEFAULT_MODEL_DIR}")
-    ap.add_argument("--data-dir", type=Path, default=DEFAULT_DATA_DIR,
-                    help=f"Bios dir with people.json + old_to_new.json. Default: {DEFAULT_DATA_DIR}")
-    ap.add_argument("--out", type=Path, default=None,
-                    help="Output dir. Default: inference/<sae_name>/")
-    ap.add_argument("--n-per-person", type=int, default=2,
-                    help="Distinct templates per person (default: 2).")
-    ap.add_argument("--context-size", type=int, default=64,
-                    help="Tokens per row in the index corpus (default: 64).")
-    ap.add_argument("--features", default="all",
-                    help="'all', '0-99', or '0,5,10' (default: all).")
-    ap.add_argument("--hook", default=DEFAULT_HOOK,
-                    help=f"Hook point (default: {DEFAULT_HOOK}).")
-    ap.add_argument("--minibatch-tokens", type=int, default=128,
-                    help="sae_dashboard token minibatch size (default: 128).")
-    ap.add_argument("--minibatch-features", type=int, default=256,
-                    help="sae_dashboard feature minibatch size (default: 256).")
-    ap.add_argument("--seed", type=int, default=0)
-    args = ap.parse_args()
+    for label, p in [("MODEL_DIR", MODEL_DIR), ("DATA_DIR", DATA_DIR), ("SAE_PATH", SAE_PATH)]:
+        if not p.exists():
+            raise FileNotFoundError(f"{label} does not exist: {p}\nEdit the CONFIG block in computeInference.py.")
 
-    if not args.sae_path.exists():
-        ap.error(f"SAE path does not exist: {args.sae_path}")
-    if not args.model_dir.exists():
-        ap.error(f"Model dir does not exist: {args.model_dir} (set --model-dir)")
-    if not args.data_dir.exists():
-        ap.error(f"Data dir does not exist: {args.data_dir} (set --data-dir)")
-
-    remap_path = args.data_dir / "old_to_new.json"
-    people_path = args.data_dir / "people.json"
-    if not remap_path.exists():
-        ap.error(f"Missing {remap_path}")
-    if not people_path.exists():
-        ap.error(f"Missing {people_path}")
-
-    out_dir = args.out or derive_out_dir(args.sae_path)
-    out_dir.mkdir(parents=True, exist_ok=True)
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    remap_path = DATA_DIR / "old_to_new.json"
+    people_path = DATA_DIR / "people.json"
 
     device = pick_device()
     print(f"[device]  {device}")
-    print(f"[model]   {args.model_dir}")
-    model = build_model(args.model_dir, device)
+
+    print(f"[model]   {MODEL_DIR}")
+    model = build_model(MODEL_DIR, device)
     print(f"          n_layers={model.cfg.n_layers}, d_model={model.cfg.d_model}, "
           f"d_vocab={model.cfg.d_vocab}")
 
-    print(f"[data]    {args.data_dir}")
+    print(f"[data]    {DATA_DIR}")
     tokenizer = CondensedTokenizer.from_remap_path(remap_path)
-    sampler = BioSampler(people_path, fields=("birthday",), seed=args.seed)
+    sampler = BioSampler(people_path, fields=("birthday",), seed=SEED)
     print(f"          {len(sampler.people):,} people, {sampler.n_templates} templates each")
 
-    print(f"[sae]     {args.sae_path}")
-    sae = load_sae(args.sae_path, device)
-    print(f"          d_sae={sae.cfg.d_sae}, hook={args.hook}")
+    print(f"[sae]     {SAE_PATH}")
+    sae = load_sae(SAE_PATH, device)
+    print(f"          d_sae={sae.cfg.d_sae}, hook={HOOK_NAME}")
 
-    print(f"[corpus]  n_per_person={args.n_per_person}, context_size={args.context_size}")
+    print(f"[corpus]  n_per_person={N_PER_PERSON}, context_size={CONTEXT_SIZE}")
     tokens = build_index_corpus(
         sampler, tokenizer,
-        n_per_person=args.n_per_person,
-        context_size=args.context_size,
-        seed=args.seed,
-        cache_path=out_dir / "index_corpus.pt",
+        n_per_person=N_PER_PERSON,
+        context_size=CONTEXT_SIZE,
+        seed=SEED,
+        cache_path=OUT_DIR / "index_corpus.pt",
     )
     print(f"          tokens shape: {tuple(tokens.shape)}")
 
-    features = parse_features(args.features)
-    n_features = len(features) if features is not None else sae.cfg.d_sae
-    print(f"[render]  {n_features} features -> {out_dir / 'dashboard.html'}")
+    n_features = len(FEATURES) if FEATURES is not None else sae.cfg.d_sae
+    print(f"[render]  {n_features} features -> {OUT_DIR / 'dashboard.html'}")
 
     out_html = make_dashboard(
         model, sae, tokens.to(device), tokenizer,
-        out_dir=out_dir,
-        hook_name=args.hook,
-        features=features,
-        minibatch_size_tokens=args.minibatch_tokens,
-        minibatch_size_features=args.minibatch_features,
+        out_dir=OUT_DIR,
+        hook_name=HOOK_NAME,
+        features=FEATURES,
+        minibatch_size_tokens=MINIBATCH_TOKENS,
+        minibatch_size_features=MINIBATCH_FEATURES,
     )
 
     print()
     print(f"DONE: {out_html}")
     print()
-    print(f"To view on your laptop:")
-    print(f"  scp -r <user>@<host>:{out_dir.resolve()} ~/Downloads/")
-    print(f"  open ~/Downloads/{out_dir.name}/dashboard.html")
+    print("To view on your laptop:")
+    print(f"  scp -r friedmae@bridges2:{OUT_DIR.resolve()} <local-repo>/inference/")
+    print(f"  # then run the notebook's Option A cell")
 
 
 if __name__ == "__main__":
