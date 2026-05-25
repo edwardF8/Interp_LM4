@@ -149,3 +149,13 @@ def test_steer_scale_zero_matches_clean(model_sae_tokenizer):
         hook_name="blocks.1.hook_mlp_out",
     )
     assert out["clean_top_tokens"] == out["steered_top_tokens"]
+
+
+def test_dla_returns_top_and_bottom(model_sae_tokenizer):
+    from sae_explorer import dla
+    model, sae, tokenizer = model_sae_tokenizer
+    out = dla(sae, model, tokenizer, feature_idx=0, k=10)
+    assert set(out.keys()) == {"top", "bottom"}
+    assert len(out["top"]) == 10 and len(out["bottom"]) == 10
+    # top entries should have strictly higher logit_delta than bottom entries.
+    assert out["top"][-1]["logit_delta"] > out["bottom"][0]["logit_delta"]

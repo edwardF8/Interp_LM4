@@ -178,3 +178,29 @@ def steer(
         "steered_top_tokens": topk_tokens(steered_logits),
         "delta_logits":       topk_tokens(delta),
     }
+
+
+def dla(sae, model, tokenizer, feature_idx: int, k: int = 10) -> dict:
+    """Direct logit attribution for SAE feature `feature_idx`.
+
+    Projects the feature's decoder direction through the model's unembed
+    matrix to estimate which output tokens it linearly promotes (top) and
+    suppresses (bottom). Ignores downstream attention/MLP nonlinearities
+    and layernorm scaling — this is the same panel `sae_dashboard` shows
+    in each feature's HTML, exposed here so you can scan features in code.
+
+    Returns dict with 'top' and 'bottom' lists, each of length k.
+    """
+    with torch.no_grad():
+        direction = sae.W_dec[feature_idx].to(model.W_U.device)
+        logits = direction @ model.W_U  # [d_vocab]
+        top_vals, top_idxs = logits.topk(k)
+        bot_vals, bot_idxs = logits.topk(k, largest=False)
+
+    def fmt(vals, idxs):
+        return [
+            {"token_id": int(i), "text": tokenizer.decode([int(i)]), "logit_delta": float(v)}
+            for v, i in zip(vals, idxs)
+        ]
+
+    return {"top": fmt(top_vals, top_idxs), "bottom": fmt(bot_vals, bot_idxs)}
