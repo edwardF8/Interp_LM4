@@ -129,9 +129,45 @@ def make_dashboard(
     runner = SaeVisRunner(cfg)
     sae_vis_data = runner.run(encoder=sae_for_dashboard, model=model, tokens=tokens)
 
-    out_html = out_dir / "dashboard.html"
-    save_feature_centric_vis(sae_vis_data=sae_vis_data, filename=str(out_html))
-    return out_html
+    # separate_files=True writes one HTML per feature (~500 KB each) instead of
+    # one combined file (~hundreds of MB) that crashes the browser on a full SAE.
+    save_feature_centric_vis(
+        sae_vis_data=sae_vis_data,
+        filename=str(out_dir / "dashboard.html"),
+        separate_files=True,
+    )
+    _write_index_html(out_dir, features)
+    return out_dir / "index.html"
+
+
+def _write_index_html(out_dir: Path, requested_features: list[int]) -> None:
+    """Write index.html linking each per-feature HTML that got generated."""
+    import re
+
+    pat = re.compile(r"dashboard_feature_(\d+)\.html$")
+    rendered = {
+        int(m.group(1))
+        for f in out_dir.glob("dashboard_feature_*.html")
+        if (m := pat.search(f.name))
+    }
+
+    rows = []
+    for feat in requested_features:
+        if feat in rendered:
+            rows.append(f'<li><a href="dashboard_feature_{feat}.html">feature {feat}</a></li>')
+        else:
+            rows.append(f'<li class="dead">feature {feat} (no panel)</li>')
+
+    html = (
+        "<!doctype html><html><head><title>SAE features</title>"
+        "<style>body{font-family:system-ui;margin:2rem;line-height:1.5}"
+        "ul{columns:4;column-gap:2rem;list-style:none;padding:0}"
+        "li.dead{color:#999}</style></head><body>"
+        f"<h1>SAE features ({len(rendered)} of {len(requested_features)} rendered)</h1>"
+        "<ul>" + "".join(rows) + "</ul>"
+        "</body></html>"
+    )
+    (out_dir / "index.html").write_text(html)
 
 
 def steer(
@@ -177,6 +213,52 @@ def steer(
         "clean_top_tokens":   topk_tokens(clean_logits),
         "steered_top_tokens": topk_tokens(steered_logits),
         "delta_logits":       topk_tokens(delta),
+    }
+
+
+def feature_activation_stats(
+    model,
+    sae,
+    tokens: torch.Tensor,
+    hook_name: str,
+    batch_size: int = 8,
+) -> dict:
+    """Per-feature activation statistics across `tokens`.
+
+    For each of the SAE's `d_sae` features, computes the max activation
+    across the corpus, the mean activation, and the count of token positions
+    where the feature fired (>0). Useful for plotting the distribution of
+    feature activity and identifying dead features.
+
+    Returns a dict with cpu tensors:
+      - max_activation:   [d_sae] float
+      - mean_activation:  [d_sae] float
+      - activation_count: [d_sae] int
+      - n_tokens:         int  (total positions seen)
+    """
+    device = next(model.parameters()).device
+    d_sae = sae.cfg.d_sae
+    max_acts = torch.zeros(d_sae, device=device)
+    sum_acts = torch.zeros(d_sae, device=device)
+    counts = torch.zeros(d_sae, dtype=torch.long, device=device)
+    n_tokens = 0
+
+    with torch.no_grad():
+        for i in range(0, len(tokens), batch_size):
+            batch = tokens[i:i + batch_size].to(device)
+            _, cache = model.run_with_cache(batch, names_filter=hook_name)
+            feats = sae.encode(cache[hook_name])      # [B, T, d_sae]
+            flat = feats.reshape(-1, d_sae)           # [B*T, d_sae]
+            max_acts = torch.maximum(max_acts, flat.max(dim=0).values)
+            sum_acts += flat.sum(dim=0)
+            counts += (flat > 0).sum(dim=0)
+            n_tokens += flat.shape[0]
+
+    return {
+        "max_activation":   max_acts.cpu(),
+        "mean_activation":  (sum_acts / n_tokens).cpu(),
+        "activation_count": counts.cpu(),
+        "n_tokens":         n_tokens,
     }
 
 

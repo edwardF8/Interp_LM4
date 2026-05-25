@@ -159,3 +159,20 @@ def test_dla_returns_top_and_bottom(model_sae_tokenizer):
     assert len(out["top"]) == 10 and len(out["bottom"]) == 10
     # top entries should have strictly higher logit_delta than bottom entries.
     assert out["top"][-1]["logit_delta"] > out["bottom"][0]["logit_delta"]
+
+
+def test_top_features_for_text(model_sae_tokenizer):
+    from sae_explorer import top_features_for_text
+    model, sae, tokenizer = model_sae_tokenizer
+    out = top_features_for_text(
+        model, sae, tokenizer,
+        text=" Gabriella Ella Rigby was born on February 18, 1816.",
+        hook_name="blocks.1.hook_mlp_out",
+        k=5,
+    )
+    assert len(out) == 5
+    expected_keys = {"feature_idx", "max_activation", "mean_activation",
+                     "position_argmax", "token_at_argmax"}
+    assert all(set(r.keys()) == expected_keys for r in out)
+    # Ranked by max_activation descending.
+    assert out[0]["max_activation"] >= out[-1]["max_activation"]
