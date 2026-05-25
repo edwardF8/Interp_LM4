@@ -39,9 +39,9 @@ DEFAULTS = {
 
 SAE_seed = 0
 batch_size = 4096
-modelName = "bioS_NM_BD_4Layer_6Heads"
+modelName = "bioS_NM_BD_8Layer_6Heads"
 
-MODEL_DIR  = Path("../Training_On_LM4/runs/bioS_N-Bd_final_grid/20260520-134455/grid/grid-L4-H6/final/")
+MODEL_DIR  = Path("../Training_On_LM4/runs/bioS_N-Bd_final_grid/20260520-134455/grid/grid-L8-H6/final/")
 DATA_DIR   = Path("../Training_On_LM4/cache/bioS_N-Bd_final_grid/")
 REMAP_PATH = DATA_DIR / "old_to_new.json"
 TOKENS_PATH = DATA_DIR / "bios_postreduce.bin"
@@ -100,6 +100,7 @@ eval_tokens = torch.tensor(np.array(eval_rows), dtype=torch.long, device=device)
 SWEEP_CONFIG = {
     "program": "trainSAE.py",
     "method":  "grid",
+    "name" : f"sae_sweep_on_{modelName}",
     "metric":  {"name": "final_eval/ce_recovered", "goal": "maximize"},
     "parameters": {
         "l0_coefficient": {"values": [2.0, 5.0, 10.0]},

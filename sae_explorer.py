@@ -180,6 +180,49 @@ def steer(
     }
 
 
+def top_features_for_text(
+    model,
+    sae,
+    tokenizer,
+    text: str,
+    hook_name: str,
+    k: int = 10,
+) -> list[dict]:
+    """Find the SAE features most active when the model processes `text`.
+
+    Runs one forward pass caching activations at `hook_name`, encodes them
+    through the SAE, and returns the top-k features ranked by their max
+    activation across the sequence. Useful for picking which feature to
+    feed into `dla()` or `steer()`.
+
+    Each result dict has: feature_idx, max_activation, mean_activation,
+    position_argmax (token position where the feature fires hardest), and
+    token_at_argmax (the decoded token at that position).
+    """
+    device = next(model.parameters()).device
+    ids = [tokenizer.eos_token_id] + tokenizer.encode(text)
+    input_tokens = torch.tensor([ids], device=device)
+
+    with torch.no_grad():
+        _, cache = model.run_with_cache(input_tokens, names_filter=hook_name)
+        acts = cache[hook_name]                   # [1, T, d_in]
+        features = sae.encode(acts)[0]            # [T, d_sae]
+        max_acts, max_pos = features.max(dim=0)   # both [d_sae]
+        mean_acts = features.mean(dim=0)          # [d_sae]
+        _, top_idxs = max_acts.topk(k)
+
+    return [
+        {
+            "feature_idx":     int(idx),
+            "max_activation":  float(max_acts[idx]),
+            "mean_activation": float(mean_acts[idx]),
+            "position_argmax": int(max_pos[idx]),
+            "token_at_argmax": tokenizer.decode([int(input_tokens[0, max_pos[idx]])]),
+        }
+        for idx in top_idxs
+    ]
+
+
 def dla(sae, model, tokenizer, feature_idx: int, k: int = 10) -> dict:
     """Direct logit attribution for SAE feature `feature_idx`.
 
