@@ -21,3 +21,10 @@ model/*
 # SAE dashboard HTML output + cached corpora
 sae_runs/**/dashboards/
 inference/
+
+# After reorg: trained SAEs + generated dashboards live under saes/.
+saes/sae_runs/
+saes/sae_inference/
+
+# Random extras
+*.tar.gz

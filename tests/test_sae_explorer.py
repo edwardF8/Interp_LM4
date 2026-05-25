@@ -5,9 +5,9 @@ from pathlib import Path
 
 import torch
 
-from sae_explorer import build_index_corpus
-from bio_sampler import BioSampler
-from condensed_tokenizer import CondensedTokenizer
+from saes.sae_explorer import build_index_corpus
+from util.bio_sampler import BioSampler
+from util.condensed_tokenizer import CondensedTokenizer
 
 DATA_DIR = Path("data/BD_llama_inital")
 
@@ -92,7 +92,7 @@ def model_sae_tokenizer():
     from transformers import LlamaForCausalLM
     from transformer_lens import HookedTransformer, HookedTransformerConfig
     from transformer_lens.loading_from_pretrained import convert_llama_weights
-    from evalSAE import load_sae
+    from saes.evalSAE import load_sae
 
     MODEL_DIR = Path("model/BD_llama_6heads_1epoch_4layers")
     SAE_PATH  = Path("sae_runs/sweep-n66crzzw/mult16_l05_lr3e-05_ep50_n10000/final")
@@ -122,7 +122,7 @@ def model_sae_tokenizer():
 
 
 def test_steer_returns_expected_keys(model_sae_tokenizer):
-    from sae_explorer import steer
+    from saes.sae_explorer import steer
     model, sae, tokenizer = model_sae_tokenizer
     out = steer(
         model, sae, tokenizer,
@@ -139,7 +139,7 @@ def test_steer_returns_expected_keys(model_sae_tokenizer):
 
 def test_steer_scale_zero_matches_clean(model_sae_tokenizer):
     """scale=0 should leave logits unchanged, so steered top tokens = clean top tokens."""
-    from sae_explorer import steer
+    from saes.sae_explorer import steer
     model, sae, tokenizer = model_sae_tokenizer
     out = steer(
         model, sae, tokenizer,
@@ -152,7 +152,7 @@ def test_steer_scale_zero_matches_clean(model_sae_tokenizer):
 
 
 def test_dla_returns_top_and_bottom(model_sae_tokenizer):
-    from sae_explorer import dla
+    from saes.sae_explorer import dla
     model, sae, tokenizer = model_sae_tokenizer
     out = dla(sae, model, tokenizer, feature_idx=0, k=10)
     assert set(out.keys()) == {"top", "bottom"}
@@ -162,7 +162,7 @@ def test_dla_returns_top_and_bottom(model_sae_tokenizer):
 
 
 def test_top_features_for_text(model_sae_tokenizer):
-    from sae_explorer import top_features_for_text
+    from saes.sae_explorer import top_features_for_text
     model, sae, tokenizer = model_sae_tokenizer
     out = top_features_for_text(
         model, sae, tokenizer,

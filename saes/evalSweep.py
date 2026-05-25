@@ -20,8 +20,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from trainSAE import model, eval_tokens, device
-from evalSAE import load_sae, sae_eval, print_report
+from saes.trainSAE import model, eval_tokens, device
+from saes.evalSAE import load_sae, sae_eval, print_report
 
 
 HOOK = "blocks.1.hook_mlp_out"  # must match the hook used during training

@@ -5,8 +5,8 @@ hardcoded to the Bridges-2 layout so this script runs under sbatch with
 no CLI arguments. Edit the CONFIG block when you want a different SAE
 or a feature subset.
 
-Submit:
-    sbatch submit_job_psc.sh computeInference.py
+Submit (from the repo root, so `saes/` and `util/` are on sys.path):
+    sbatch submit_job_psc.sh util/computeInference.py
 
 Then on your laptop:
     scp -r friedmae@bridges2:Interp_LM4/inference ~/Code/Project\\ Code/CRL-Interp/Interp_LM4/
@@ -21,10 +21,10 @@ from transformers import LlamaForCausalLM
 from transformer_lens import HookedTransformer, HookedTransformerConfig
 from transformer_lens.loading_from_pretrained import convert_llama_weights
 
-from bio_sampler import BioSampler
-from condensed_tokenizer import CondensedTokenizer
-from evalSAE import load_sae
-from sae_explorer import build_index_corpus, feature_activation_stats, make_dashboard
+from util.bio_sampler import BioSampler
+from util.condensed_tokenizer import CondensedTokenizer
+from saes.evalSAE import load_sae
+from saes.sae_explorer import build_index_corpus, feature_activation_stats, make_dashboard
 
 
 # ============================================================================

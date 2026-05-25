@@ -16,7 +16,9 @@ import sys
 from pathlib import Path
 
 # Make Training_On_LM4 importable; the data package there holds render_bio.
-_TRAINING_PKG = Path(__file__).resolve().parent.parent / "Training_On_LM4"
+# We're now at Interp_LM4/util/bio_sampler.py, so go up two levels to reach the
+# project root that contains both Interp_LM4 and Training_On_LM4.
+_TRAINING_PKG = Path(__file__).resolve().parent.parent.parent / "Training_On_LM4"
 if str(_TRAINING_PKG) not in sys.path:
     sys.path.insert(0, str(_TRAINING_PKG))
 

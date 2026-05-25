@@ -117,17 +117,18 @@ if __name__ == "__main__":
     from transformer_lens import HookedTransformer, HookedTransformerConfig
     from transformer_lens.loading_from_pretrained import convert_llama_weights
 
-    from bio_sampler import BioSampler
-    from condensed_tokenizer import CondensedTokenizer
-    from diverse_subset import DiverseBioSubset
+    from util.bio_sampler import BioSampler
+    from util.condensed_tokenizer import CondensedTokenizer
+    from util.diverse_subset import DiverseBioSubset
 
     # ---- config: keep in sync with trainSAE.py -----------------------------
     context_size = 512
     SAE_seed     = 0
     n_eval       = 64                       # held-out sequences (64 x 512 tok)
 
-    MODEL_DIR  = Path("../Training_On_LM4/runs/bioS_N-Bd_final_grid/20260520-134455/grid/grid-L4-H6/final/")
-    DATA_DIR   = Path("../Training_On_LM4/cache/bioS_N-Bd_final_grid")
+    # Bridges-2 absolute paths (this __main__ block is meant to run on HPC).
+    MODEL_DIR  = Path("/jet/home/friedmae/data_storage/LM4_Results/runResults/bioS_N-Bd_final_grid/20260520-134455/grid/grid-L4-H6/final")
+    DATA_DIR   = Path("/jet/home/friedmae/data_storage/LM4_Results/Data/bioS_N-Bd_final_grid")
     REMAP_PATH = DATA_DIR / "old_to_new.json"
 
     # saeName is rebuilt the same way trainSAE.py builds it - if you retrain

@@ -9,10 +9,10 @@ from transformers import LlamaForCausalLM
 from transformer_lens import HookedTransformer, HookedTransformerConfig
 from transformer_lens.loading_from_pretrained import convert_llama_weights # type: ignore
 
-from bio_sampler import BioSampler
-from condensed_tokenizer import CondensedTokenizer
-from diverse_subset import DiverseBioSubset # type: ignore
-from evalSAE import sae_eval, print_report
+from util.bio_sampler import BioSampler
+from util.condensed_tokenizer import CondensedTokenizer
+from util.diverse_subset import DiverseBioSubset # type: ignore
+from saes.evalSAE import sae_eval, print_report
 import wandb
 
 
@@ -41,9 +41,11 @@ SAE_seed = 0
 batch_size = 4096
 modelName = "bioS_NM_BD_8Layer_6Heads"
 
-MODEL_DIR  = Path("../Training_On_LM4/runs/bioS_N-Bd_final_grid/20260520-134455/grid/grid-L8-H6/final/")
-DATA_DIR   = Path("../Training_On_LM4/cache/bioS_N-Bd_final_grid/")
-REMAP_PATH = DATA_DIR / "old_to_new.json"
+# Bridges-2 absolute paths. These differ from the local Mac layout — see
+# `data/BD_llama_inital/` and `model/BD_llama_6heads_1epoch_4layers/` for that.
+MODEL_DIR   = Path("/jet/home/friedmae/data_storage/LM4_Results/runResults/bioS_N-Bd_final_grid/20260520-134455/grid/grid-L8-H6/final")
+DATA_DIR    = Path("/jet/home/friedmae/data_storage/LM4_Results/Data/bioS_N-Bd_final_grid")
+REMAP_PATH  = DATA_DIR / "old_to_new.json"
 TOKENS_PATH = DATA_DIR / "bios_postreduce.bin"
 
 device = pick_device()
