@@ -52,6 +52,11 @@ export PYTHONUNBUFFERED=1
 # --- Run --------------------------------------------------------------------
 cd "$SLURM_SUBMIT_DIR"
 
+# Put the project root on the import path so scripts run from subdirectories
+# (e.g. saes/trainSAE.py) can still import the top-level `util` / `saes`
+# packages. Running `python saes/trainSAE.py` otherwise only adds `saes/`.
+export PYTHONPATH="$SLURM_SUBMIT_DIR${PYTHONPATH:+:$PYTHONPATH}"
+
 echo "=== Job $SLURM_JOB_ID on $(hostname) ==="
 echo "Started: $(date)"
 nvidia-smi || true
