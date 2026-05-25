@@ -152,7 +152,7 @@ def train_one_run():
     # Group all trials of a sweep into one folder so the layout mirrors wandb;
     # solo runs go under a sibling `standalone/` folder for the same tidiness.
     sweep_folder    = f"sweep-{sweep_id}" if sweep_id else "standalone"
-    SAE_RUN_DIR     = f"sae/{sweep_folder}/{saeName}"
+    SAE_RUN_DIR     = f"saes/sae_runs/{sweep_folder}/{saeName}"
     checkpoint_path = f"{SAE_RUN_DIR}/checkpoints"
     output_path     = f"{SAE_RUN_DIR}/final"
 

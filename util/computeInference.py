@@ -35,7 +35,7 @@ from saes.sae_explorer import build_index_corpus, feature_activation_stats, make
 # checkpoint is under the project's sae/ tree.
 MODEL_DIR = Path("/jet/home/friedmae/data_storage/LM4_Results/runResults/bioS_N-Bd_final_grid/20260520-134455/grid/grid-L4-H6/final")
 DATA_DIR  = Path("/jet/home/friedmae/data_storage/LM4_Results/Data/bioS_N-Bd_final_grid")
-SAE_PATH  = Path("/jet/home/friedmae/Interp_LM4/sae/sweep-n66crzzw/mult16_l05_lr3e-05_ep50_n10000/final")
+SAE_PATH  = Path("/jet/home/friedmae/Interp_LM4/saes/sae_runs/sweep-n66crzzw/mult16_l05_lr3e-05_ep50_n10000/final")
 
 HOOK_NAME = "blocks.1.hook_mlp_out"
 
