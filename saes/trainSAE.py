@@ -168,21 +168,22 @@ def trial_name(hook_name: str, sae_mult: int, l0_coefficient: float, lr: float,
     return f"L{layer}_{base}" if layer is not None else base
 
 
-def build_sweep_config(args: argparse.Namespace) -> dict:
-    """Expand --layers + --hook-template into a wandb sweep grid."""
-    if not args.layers:
-        raise SystemExit("--sweep requires --layers (e.g. --layers 2,4,6)")
-    if "{layer}" not in args.hook_template:
-        raise SystemExit("--hook-template must contain '{layer}'")
-    layers = [int(x) for x in args.layers.split(",") if x.strip()]
-    hooks = [args.hook_template.format(layer=L) for L in layers]
+def build_sweep_config(args: argparse.Namespace, hook_name: str) -> dict:
+    """Build a wandb sweep grid for *one* layer / hook.
+
+    Per-layer sweeps (rather than one combined sweep with hook_name as an
+    axis) give cleaner per-layer rankings on the wandb UI and let Hyperband
+    prune trials within a layer rather than cross-layer.
+    """
+    layer = layer_from_hook(hook_name)
+    layer_tag = f"L{layer}" if layer is not None else hook_name.replace(".", "_")
     return {
         "program": "trainSAE.py",
         "method":  "grid",
-        "name":    f"sae_sweep_on_{args.model_name}",
+        "name":    f"sae_sweep_{args.model_name}_{layer_tag}",
         "metric":  {"name": "final_eval/ce_recovered", "goal": "maximize"},
         "parameters": {
-            "hook_name":      {"values": hooks},
+            "hook_name":      {"value":  hook_name},   # singleton — baked into config
             "l0_coefficient": {"values": [2.0, 5.0, 10.0]},
             "sae_mult":       {"values": [8, 16]},
             "lr":             {"values": [3e-5, 1e-4]},
@@ -190,6 +191,16 @@ def build_sweep_config(args: argparse.Namespace) -> dict:
         },
         "early_terminate": {"type": "hyperband", "min_iter": 5, "eta": 3},
     }
+
+
+def expand_layers(args: argparse.Namespace) -> list[str]:
+    """Parse --layers into hook names via --hook-template."""
+    if not args.layers:
+        raise SystemExit("--sweep requires --layers (e.g. --layers 2,4,6)")
+    if "{layer}" not in args.hook_template:
+        raise SystemExit("--hook-template must contain '{layer}'")
+    layers = [int(x) for x in args.layers.split(",") if x.strip()]
+    return [args.hook_template.format(layer=L) for L in layers]
 
 
 # ============================================================================
@@ -357,10 +368,17 @@ def main():
     setup(args)
     if args.sweep:
         _patch_signal_for_worker_threads()
-        sweep_config = build_sweep_config(args)
-        sweep_id = wandb.sweep(sweep_config, project="interpLM4")
-        print(f"\nSweep registered: {sweep_id}")
-        wandb.agent(sweep_id, function=train_one_run)
+        hooks = expand_layers(args)
+        print(f"\n[plan]    {len(hooks)} per-layer sweep(s): {hooks}")
+        for i, hook_name in enumerate(hooks, 1):
+            print()
+            print("=" * 64)
+            print(f"  [{i}/{len(hooks)}] sweep for {hook_name}")
+            print("=" * 64)
+            cfg = build_sweep_config(args, hook_name)
+            sweep_id = wandb.sweep(cfg, project="interpLM4")
+            print(f"  registered: {sweep_id}")
+            wandb.agent(sweep_id, function=train_one_run)
     else:
         train_one_run()
 
