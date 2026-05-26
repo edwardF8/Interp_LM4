@@ -1,31 +1,51 @@
-from pathlib import Path
-from datasets import Dataset
+"""Train SAEs on a base model.
 
-from sae_lens import SAE, HookedSAETransformer, LoggingConfig
-from sae_lens import LanguageModelSAERunnerConfig, LanguageModelSAETrainingRunner, JumpReLUTrainingSAEConfig
+Single run, default hook ('blocks.1.hook_mlp_out'):
+    python saes/trainSAE.py --model-dir <path> --data-dir <path>
+
+Single run on a specific layer:
+    python saes/trainSAE.py --model-dir <path> --data-dir <path> --hook "blocks.3.hook_mlp_out"
+
+Multi-trial sweep over layers + hyperparams:
+    python saes/trainSAE.py --model-dir <path> --data-dir <path> \\
+        --layers 2,4,6 --hook-template "blocks.{layer}.hook_mlp_out" --sweep
+
+Outputs land in:
+    saes/sae_runs/<model-name>/[sweep-<id>|standalone]/<trial>/final/
+
+<trial> is L<layer>_mult<m>_l0<x>_lr<r>_ep<e>_n<k>, so different-layer trials
+never collide. <model-name> defaults to the parent dir of --model-dir (e.g.
+'/.../grid-L8-H6/final' -> 'grid-L8-H6').
+"""
+from __future__ import annotations
+
+import argparse
+import re
+from pathlib import Path
+
 import numpy as np
 import torch
+from sae_lens import (
+    HookedSAETransformer,
+    JumpReLUTrainingSAEConfig,
+    LanguageModelSAERunnerConfig,
+    LanguageModelSAETrainingRunner,
+    LoggingConfig,
+    SAE,
+)
 from transformers import LlamaForCausalLM
 from transformer_lens import HookedTransformer, HookedTransformerConfig
-from transformer_lens.loading_from_pretrained import convert_llama_weights # type: ignore
-
-from util.bio_sampler import BioSampler
-from util.condensed_tokenizer import CondensedTokenizer
-from util.diverse_subset import DiverseBioSubset # type: ignore
-from saes.evalSAE import sae_eval, print_report
+from transformer_lens.loading_from_pretrained import convert_llama_weights  # type: ignore
 import wandb
 
-
-def pick_device() -> str:
-    if torch.cuda.is_available():
-        return "cuda"
-    if torch.backends.mps.is_available():
-        return "mps"
-    return "cpu"
+from saes.evalSAE import print_report, sae_eval
+from util.bio_sampler import BioSampler
+from util.condensed_tokenizer import CondensedTokenizer
+from util.diverse_subset import DiverseBioSubset  # type: ignore
 
 
 # ============================================================================
-# Module-level setup (runs once per Python process — shared across sweep trials)
+# Defaults — overridable via CLI flags or the sweep grid.
 # ============================================================================
 
 DEFAULTS = {
@@ -39,120 +59,166 @@ DEFAULTS = {
 
 SAE_seed = 0
 batch_size = 4096
-modelName = "bioS_NM_BD_8Layer_6Heads"
-
-# Bridges-2 absolute paths. These differ from the local Mac layout — see
-# `data/BD_llama_inital/` and `model/BD_llama_6heads_1epoch_4layers/` for that.
-MODEL_DIR   = Path("/jet/home/friedmae/data_storage/LM4_Results/runResults/bioS_N-Bd_final_grid/20260520-134455/grid/grid-L8-H6/final")
-DATA_DIR    = Path("/jet/home/friedmae/data_storage/LM4_Results/Data/bioS_N-Bd_final_grid")
-REMAP_PATH  = DATA_DIR / "old_to_new.json"
-TOKENS_PATH = DATA_DIR / "bios_postreduce.bin"
-
-device = pick_device()
-dtype = torch.float32
-
-# Load HF model + convert to TransformerLens once; reuse across all trials.
-hf_model = LlamaForCausalLM.from_pretrained(MODEL_DIR, torch_dtype=dtype)
-hf_model.eval()
-
-hf_cfg = hf_model.config
-tl_cfg = HookedTransformerConfig(
-    n_layers = hf_cfg.num_hidden_layers,
-    d_model = hf_cfg.hidden_size,
-    d_head = hf_cfg.hidden_size // hf_cfg.num_attention_heads,
-    n_heads = hf_cfg.num_attention_heads,
-    d_mlp= hf_cfg.intermediate_size,
-    d_vocab=hf_cfg.vocab_size,
-    n_ctx=hf_cfg.max_position_embeddings,
-    act_fn="silu",
-    normalization_type="RMS",
-    gated_mlp=True,
-    positional_embedding_type="rotary",
-    rotary_base=int(getattr(hf_cfg, "rope_theta", 10000.0)),
-    rotary_dim=hf_cfg.hidden_size // hf_cfg.num_attention_heads,
-    final_rms=True,
-    tie_word_embeddings=hf_cfg.tie_word_embeddings,
-    initializer_range=hf_cfg.initializer_range,
-    n_key_value_heads=hf_cfg.num_key_value_heads,
-    device=device,
-)
-state_dict = convert_llama_weights(hf_model, tl_cfg)
-model = HookedTransformer(tl_cfg)
-model.load_state_dict(state_dict, strict=False)
-model.to(device)
-model.eval()
-print(f"Loaded on {device}: n_layers={model.cfg.n_layers}, d_model={model.cfg.d_model}, "
-      f"n_heads={model.cfg.n_heads}, d_vocab={model.cfg.d_vocab}")
-
-sampler   = BioSampler(DATA_DIR / "people.json", fields=("birthday",), seed=SAE_seed)
-tokenizer = CondensedTokenizer.from_remap_path(REMAP_PATH)
-
-# Held-out eval tokens — built once, reused for every trial's final eval.
-eval_subset = DiverseBioSubset(
-    sampler, tokenizer, context_size=DEFAULTS["context_size"], seed=SAE_seed + 1
-)
-eval_rows = eval_subset.to_hf_dataset(64, verbose=False)["input_ids"]
-eval_tokens = torch.tensor(np.array(eval_rows), dtype=torch.long, device=device)
 
 
 # ============================================================================
-# Sweep config — used when running with `--sweep`.
+# Module state — populated once by `setup()`, reused by every sweep trial
+# (wandb.agent reuses this Python process).
 # ============================================================================
 
-SWEEP_CONFIG = {
-    "program": "trainSAE.py",
-    "method":  "grid",
-    "name" : f"sae_sweep_on_{modelName}",
-    "metric":  {"name": "final_eval/ce_recovered", "goal": "maximize"},
-    "parameters": {
-        "l0_coefficient": {"values": [2.0, 5.0, 10.0]},
-        "sae_mult":       {"values": [8, 16]},
-        "lr":             {"values": [3e-5, 1e-4]},
-        "epochs":         {"value":  50},
-    },
-    "early_terminate": {
-        "type":     "hyperband",
-        "min_iter": 5,
-        "eta":      3,
-    },
-}
+ARGS: argparse.Namespace | None = None
+device: str | None = None
+model: HookedTransformer | None = None
+tokenizer: CondensedTokenizer | None = None
+sampler: BioSampler | None = None
+eval_tokens: torch.Tensor | None = None
+
+
+def pick_device() -> str:
+    if torch.cuda.is_available():
+        return "cuda"
+    if torch.backends.mps.is_available():
+        return "mps"
+    return "cpu"
+
+
+def setup(args: argparse.Namespace) -> None:
+    """One-time module setup: model, tokenizer, sampler, held-out eval tokens.
+
+    Populates module globals. Called once per process; every trial of a sweep
+    then reads from those globals without reloading.
+    """
+    global ARGS, device, model, tokenizer, sampler, eval_tokens
+    ARGS = args
+
+    if args.model_name is None:
+        # '/jet/.../grid-L8-H6/final' -> 'grid-L8-H6'
+        # '/jet/.../grid-L8-H6'       -> 'grid-L8-H6'
+        args.model_name = (
+            args.model_dir.parent.name if args.model_dir.name == "final"
+            else args.model_dir.name
+        )
+
+    device = pick_device()
+    dtype = torch.float32
+
+    hf_model = LlamaForCausalLM.from_pretrained(args.model_dir, torch_dtype=dtype).eval()
+    hf_cfg = hf_model.config
+    tl_cfg = HookedTransformerConfig(
+        n_layers=hf_cfg.num_hidden_layers,
+        d_model=hf_cfg.hidden_size,
+        d_head=hf_cfg.hidden_size // hf_cfg.num_attention_heads,
+        n_heads=hf_cfg.num_attention_heads,
+        d_mlp=hf_cfg.intermediate_size,
+        d_vocab=hf_cfg.vocab_size,
+        n_ctx=hf_cfg.max_position_embeddings,
+        act_fn="silu",
+        normalization_type="RMS",
+        gated_mlp=True,
+        positional_embedding_type="rotary",
+        rotary_base=int(getattr(hf_cfg, "rope_theta", 10000.0)),
+        rotary_dim=hf_cfg.hidden_size // hf_cfg.num_attention_heads,
+        final_rms=True,
+        tie_word_embeddings=hf_cfg.tie_word_embeddings,
+        initializer_range=hf_cfg.initializer_range,
+        n_key_value_heads=hf_cfg.num_key_value_heads,
+        device=device,
+    )
+    model = HookedTransformer(tl_cfg)
+    model.load_state_dict(convert_llama_weights(hf_model, tl_cfg), strict=False)
+    model.to(device).eval()
+    print(f"[model]   {args.model_dir} (name: {args.model_name})")
+    print(f"          n_layers={model.cfg.n_layers}, d_model={model.cfg.d_model}, "
+          f"n_heads={model.cfg.n_heads}, d_vocab={model.cfg.d_vocab}")
+
+    remap_path = args.data_dir / "old_to_new.json"
+    tokenizer = CondensedTokenizer.from_remap_path(remap_path)
+    sampler = BioSampler(args.data_dir / "people.json", fields=("birthday",), seed=SAE_seed)
+
+    eval_subset = DiverseBioSubset(
+        sampler, tokenizer, context_size=args.context_size, seed=SAE_seed + 1
+    )
+    eval_rows = eval_subset.to_hf_dataset(64, verbose=False)["input_ids"]
+    eval_tokens = torch.tensor(np.array(eval_rows), dtype=torch.long, device=device)
+    print(f"[data]    {args.data_dir}")
+    print(f"          {len(sampler.people):,} people, {sampler.n_templates} templates, "
+          f"eval tokens: {tuple(eval_tokens.shape)}")
 
 
 # ============================================================================
-# Per-trial training function (called by wandb.agent OR directly for single runs).
+# Naming helpers
 # ============================================================================
 
-def train_one_run():
+_LAYER_RE = re.compile(r"\.(\d+)\.")
+
+
+def layer_from_hook(hook_name: str) -> int | None:
+    """'blocks.3.hook_mlp_out' -> 3. Returns None if hook has no numeric segment."""
+    m = _LAYER_RE.search(hook_name)
+    return int(m.group(1)) if m else None
+
+
+def trial_name(hook_name: str, sae_mult: int, l0_coefficient: float, lr: float,
+               epochs: int, n_examples: int) -> str:
+    """Per-trial directory name. Prefixed with L<n> when the hook has a layer
+    index so different-layer trials never collide.
+    """
+    base = f"mult{sae_mult}_l0{l0_coefficient:g}_lr{lr:g}_ep{epochs}_n{n_examples}"
+    layer = layer_from_hook(hook_name)
+    return f"L{layer}_{base}" if layer is not None else base
+
+
+def build_sweep_config(args: argparse.Namespace) -> dict:
+    """Expand --layers + --hook-template into a wandb sweep grid."""
+    if not args.layers:
+        raise SystemExit("--sweep requires --layers (e.g. --layers 2,4,6)")
+    if "{layer}" not in args.hook_template:
+        raise SystemExit("--hook-template must contain '{layer}'")
+    layers = [int(x) for x in args.layers.split(",") if x.strip()]
+    hooks = [args.hook_template.format(layer=L) for L in layers]
+    return {
+        "program": "trainSAE.py",
+        "method":  "grid",
+        "name":    f"sae_sweep_on_{args.model_name}",
+        "metric":  {"name": "final_eval/ce_recovered", "goal": "maximize"},
+        "parameters": {
+            "hook_name":      {"values": hooks},
+            "l0_coefficient": {"values": [2.0, 5.0, 10.0]},
+            "sae_mult":       {"values": [8, 16]},
+            "lr":             {"values": [3e-5, 1e-4]},
+            "epochs":         {"value":  50},
+        },
+        "early_terminate": {"type": "hyperband", "min_iter": 5, "eta": 3},
+    }
+
+
+# ============================================================================
+# Per-trial training (called by wandb.agent OR directly for single runs)
+# ============================================================================
+
+def train_one_run() -> None:
     """One SAE training run + held-out eval, logged to the current wandb run.
 
-    Calls wandb.init() itself: under wandb.agent this picks up the trial's
-    swept config; standalone runs start a fresh run with no overrides.
-    Anything not set falls through to DEFAULTS.
+    Reads swept config from wandb when present; otherwise falls back to ARGS.
     """
     wandb.init(project="interpLM4")
-    # Capture identifiers so we can re-attach for eval logging after sae_lens
-    # calls wandb.finish() inside runner.run().
     run_id      = wandb.run.id
     run_entity  = wandb.run.entity
     run_project = wandb.run.project
     sweep_id    = wandb.run.sweep_id   # None when this isn't a sweep trial
     sweep_cfg   = wandb.config
 
-    n_examples     = sweep_cfg.get("n_examples",     DEFAULTS["n_examples"])
-    epochs         = sweep_cfg.get("epochs",         DEFAULTS["epochs"])
-    context_size   = sweep_cfg.get("context_size",   DEFAULTS["context_size"])
-    sae_mult       = sweep_cfg.get("sae_mult",       DEFAULTS["sae_mult"])
-    l0_coefficient = sweep_cfg.get("l0_coefficient", DEFAULTS["l0_coefficient"])
-    lr             = sweep_cfg.get("lr",             DEFAULTS["lr"])
+    hook_name      = sweep_cfg.get("hook_name",      ARGS.hook)
+    n_examples     = sweep_cfg.get("n_examples",     ARGS.n_examples)
+    epochs         = sweep_cfg.get("epochs",         ARGS.epochs)
+    context_size   = sweep_cfg.get("context_size",   ARGS.context_size)
+    sae_mult       = sweep_cfg.get("sae_mult",       ARGS.sae_mult)
+    l0_coefficient = sweep_cfg.get("l0_coefficient", ARGS.l0_coefficient)
+    lr             = sweep_cfg.get("lr",             ARGS.lr)
 
-    # Trial name encodes the swept hyperparameters so trials within a sweep
-    # never collide on disk. Use :g for compact float formatting.
-    saeName = (f"mult{sae_mult}_l0{l0_coefficient:g}_lr{lr:g}"
-               f"_ep{epochs}_n{n_examples}")
-    # Group all trials of a sweep into one folder so the layout mirrors wandb;
-    # solo runs go under a sibling `standalone/` folder for the same tidiness.
+    sae_name        = trial_name(hook_name, sae_mult, l0_coefficient, lr, epochs, n_examples)
     sweep_folder    = f"sweep-{sweep_id}" if sweep_id else "standalone"
-    SAE_RUN_DIR     = f"saes/sae_runs/{sweep_folder}/{saeName}"
+    SAE_RUN_DIR     = f"saes/sae_runs/{ARGS.model_name}/{sweep_folder}/{sae_name}"
     checkpoint_path = f"{SAE_RUN_DIR}/checkpoints"
     output_path     = f"{SAE_RUN_DIR}/final"
 
@@ -175,8 +241,8 @@ def train_one_run():
             d_in=model.cfg.d_model,
             d_sae=model.cfg.d_model * sae_mult,
         ),
-        model_name=modelName,
-        hook_name="blocks.1.hook_mlp_out",
+        model_name=ARGS.model_name,
+        hook_name=hook_name,
         dataset_path="bioS_Name_BD",
         is_dataset_tokenized=True,
         disable_concat_sequences=True,
@@ -220,7 +286,7 @@ def train_one_run():
     metrics = sae_eval(model, sae, eval_tokens, cfg.hook_name)
     print_report(metrics)
 
-    # sae_lens finished the run inside runner.run(); resume it to log eval.
+    # sae_lens calls wandb.finish() inside runner.run(); resume to log final eval.
     if wandb.run is None:
         wandb.init(
             project=run_project, entity=run_entity, id=run_id, resume="allow"
@@ -232,15 +298,53 @@ def train_one_run():
 
 
 # ============================================================================
-# Entry point: single run, or launch the sweep.
+# CLI + entry point
 # ============================================================================
+
+def parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p.add_argument("--model-dir", type=Path, required=True,
+                   help="HF Llama checkpoint dir (the base model the SAE attaches to).")
+    p.add_argument("--data-dir", type=Path, required=True,
+                   help="Dataset dir containing people.json + old_to_new.json + bios_postreduce.bin.")
+    p.add_argument("--model-name", type=str, default=None,
+                   help="Identifier for this base model in output paths. "
+                        "Default: parent dir of --model-dir (e.g. 'grid-L8-H6').")
+
+    # Single-run hook OR sweep grid over layers
+    p.add_argument("--hook", type=str, default="blocks.1.hook_mlp_out",
+                   help="Hook to train at for single runs. Ignored when --sweep is set.")
+    p.add_argument("--layers", type=str, default=None,
+                   help="Comma-separated layer indices to sweep, e.g. '2,4,6'. "
+                        "Required with --sweep; expanded via --hook-template.")
+    p.add_argument("--hook-template", type=str, default="blocks.{layer}.hook_mlp_out",
+                   help="Template used to expand --layers into hook names. Must contain '{layer}'.")
+
+    p.add_argument("--sweep", action="store_true",
+                   help="Launch a wandb grid sweep over (layer x l0 x sae_mult x lr).")
+
+    # Single-run hyperparam overrides (sweep overrides come from the grid).
+    p.add_argument("--n-examples", type=int, default=DEFAULTS["n_examples"])
+    p.add_argument("--epochs", type=int, default=DEFAULTS["epochs"])
+    p.add_argument("--context-size", type=int, default=DEFAULTS["context_size"])
+    p.add_argument("--sae-mult", type=int, default=DEFAULTS["sae_mult"])
+    p.add_argument("--l0", dest="l0_coefficient", type=float, default=DEFAULTS["l0_coefficient"])
+    p.add_argument("--lr", type=float, default=DEFAULTS["lr"])
+
+    return p.parse_args()
+
 
 def _patch_signal_for_worker_threads():
     """sae_lens installs a SIGINT handler in runner.run(), which Python only
-    permits in the main thread. wandb.agent runs trials in worker threads,
-    so we wrap signal.signal to no-op when called off the main thread."""
-    import signal, threading
+    permits on the main thread. wandb.agent runs trials in worker threads, so
+    wrap signal.signal to no-op off-main."""
+    import signal
+    import threading
     _real = signal.signal
+
     def _safe(signum, handler):
         if threading.current_thread() is threading.main_thread():
             return _real(signum, handler)
@@ -248,12 +352,18 @@ def _patch_signal_for_worker_threads():
     signal.signal = _safe
 
 
-if __name__ == "__main__":
-    import sys
-    if "--sweep" in sys.argv:
+def main():
+    args = parse_args()
+    setup(args)
+    if args.sweep:
         _patch_signal_for_worker_threads()
-        sweep_id = wandb.sweep(SWEEP_CONFIG, project="interpLM4")
+        sweep_config = build_sweep_config(args)
+        sweep_id = wandb.sweep(sweep_config, project="interpLM4")
         print(f"\nSweep registered: {sweep_id}")
         wandb.agent(sweep_id, function=train_one_run)
     else:
         train_one_run()
+
+
+if __name__ == "__main__":
+    main()

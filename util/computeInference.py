@@ -9,7 +9,7 @@ Submit (from the repo root, so `saes/` and `util/` are on sys.path):
     sbatch submit_job_psc.sh util/computeInference.py
 
 Then on your laptop:
-    scp -r friedmae@bridges2:Interp_LM4/inference ~/Code/Project\\ Code/CRL-Interp/Interp_LM4/
+    scp -r friedmae@bridges2:Interp_LM4/sae_inference ~/Code/Project\\ Code/CRL-Interp/Interp_LM4/saes/
 and open the notebook's Option A cell.
 """
 from __future__ import annotations
@@ -55,9 +55,10 @@ MINIBATCH_FEATURES = 256
 
 SEED = 0
 
-# Output goes to inference/<sae_name>/. We strip the trailing "final" so the
+# Output goes to sae_inference/<sae_name>/ — same layout the notebooks read from
+# (saes/sae_inference/<sae_name>/ locally). We strip the trailing "final" so the
 # directory name is the SAE's hyperparameter string.
-OUT_DIR = Path("inference") / (SAE_PATH.parent.name if SAE_PATH.name == "final" else SAE_PATH.name)
+OUT_DIR = Path("sae_inference") / (SAE_PATH.parent.name if SAE_PATH.name == "final" else SAE_PATH.name)
 
 # ============================================================================
 
@@ -161,7 +162,7 @@ def main() -> None:
     print(f"DONE: {out_html}")
     print()
     print("To view on your laptop:")
-    print(f"  scp -r friedmae@bridges2:{OUT_DIR.resolve()} <local-repo>/inference/")
+    print(f"  scp -r friedmae@bridges2:{OUT_DIR.resolve()} <local-repo>/saes/sae_inference/")
 
 
 if __name__ == "__main__":
