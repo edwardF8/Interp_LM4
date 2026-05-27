@@ -123,19 +123,17 @@ done
 
 ### Storage strategy
 
-Two paths are hardcoded as module constants at the top of `saes/trainSAE.py`:
+One path, hardcoded at the top of `saes/trainSAE.py`:
 
 ```python
 STORAGE_ROOT = Path("/jet/home/friedmae/data_storage/LM4_Results/saes")
-STAGING_ROOT = Path(os.environ.get("SAE_STAGING_ROOT", "saes"))
 ```
 
-- **`STORAGE_ROOT`** — permanent home for trained SAEs and all inference outputs. Hardcoded to Ocean (data_storage) because `$HOME` on PSC has a ~25 GB quota that gets exhausted by mid-training checkpoints. Edit this constant if you move workspaces.
-- **`STAGING_ROOT`** — fast scratch where sae_lens writes mid-training checkpoints. On PSC `submit_job_psc.sh` sets `SAE_STAGING_ROOT=$LOCAL/sae_staging` (node-local SSD). On Mac the env var is unset, so it falls back to `./saes` — which is fine locally, no quota issue.
+Trained SAEs and all inference outputs land permanently here. On PSC this must be on Ocean (data_storage) because `$HOME` has a ~25 GB quota that fills fast. Edit the constant if you move workspaces.
 
-After the held-out eval finishes, `train_one_run` `shutil.move`s the staged trial directory into `STORAGE_ROOT`. `runInference.py` writes directly to `STORAGE_ROOT` with no staging (its outputs — large HTML dashboards — aren't worth a copy).
+**Why no `$LOCAL` staging?** With `n_checkpoints=0` sae_lens writes exactly one ~20 MB safetensors file per trial at the end of `runner.run()`. That's a single large sequential write — Lustre/Ocean's strong case per PSC's storage docs ("If you write one big checkpoint blob, Ocean handles that fine"). Going through `$LOCAL` first only earns its keep when there are *many small writes during training* — e.g. if you bump `n_checkpoints` back up to save mid-training snapshots. In that case, switch `output_path` to a `$LOCAL` staging dir and copy to `STORAGE_ROOT` after eval.
 
-The wandb run summary gets a `storage_path` field so you can find the on-disk SAE from the wandb UI.
+`setup()` runs a write-probe on `STORAGE_ROOT` at the start of every job so permission/quota issues surface in <1s instead of after a 30-min training run. The wandb run summary gets a `storage_path` field so you can find the on-disk SAE from the wandb UI.
 
 ### CLI reference
 
