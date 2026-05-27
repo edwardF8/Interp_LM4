@@ -30,12 +30,50 @@ Then sync to your laptop:
 from __future__ import annotations
 
 import argparse
+import json
+import re
 from pathlib import Path
 
 import torch
 
 import saes.trainSAE as ts
 from saes.trainSAE import STORAGE_ROOT
+
+
+def resolve_hook(sae, sae_path: Path, trial_name: str) -> str | None:
+    """Recover the hook name the SAE was trained at.
+
+    sae_lens versions vary on where they stash this. Try, in order:
+      1. attributes on sae.cfg (hook_name / hook_point / metadata.hook_name)
+      2. runner_cfg.json or cfg.json in the SAE dir (trainSAE.py persists
+         hook_name in LanguageModelSAERunnerConfig → runner_cfg.json)
+      3. parse the L<n>_ prefix from the trial dir name (trainSAE.py
+         guarantees this; assumes the default 'blocks.{layer}.hook_mlp_out')
+    """
+    for attr in ("hook_name", "hook_point"):
+        v = getattr(sae.cfg, attr, None)
+        if v:
+            return v
+    meta = getattr(sae.cfg, "metadata", None)
+    if meta is not None:
+        v = getattr(meta, "hook_name", None)
+        if v:
+            return v
+    for fname in ("runner_cfg.json", "cfg.json"):
+        f = sae_path / fname
+        if f.exists():
+            try:
+                data = json.loads(f.read_text())
+            except Exception:
+                continue
+            for key in ("hook_name", "hook_point"):
+                v = data.get(key)
+                if v:
+                    return v
+    m = re.match(r"L(\d+)_", trial_name)
+    if m:
+        return f"blocks.{int(m.group(1))}.hook_mlp_out"
+    return None
 from saes.evalSAE import load_sae
 from saes.sae_explorer import (
     build_index_corpus,
@@ -149,9 +187,9 @@ def main() -> None:
         print("=" * 64)
 
         sae = load_sae(sae_path, ts.device)
-        hook_name = getattr(sae.cfg, "hook_name", None)
+        hook_name = resolve_hook(sae, sae_path, trial_name)
         if hook_name is None:
-            print(f"  ⚠ SAE has no cfg.hook_name; skipping.")
+            print(f"  ⚠ could not determine hook from cfg or trial name; skipping.")
             continue
         print(f"  d_sae={sae.cfg.d_sae}, hook={hook_name}")
 
