@@ -35,6 +35,7 @@ from pathlib import Path
 import torch
 
 import saes.trainSAE as ts
+from saes.trainSAE import STORAGE_ROOT
 from saes.evalSAE import load_sae
 from saes.sae_explorer import (
     build_index_corpus,
@@ -122,7 +123,9 @@ def main() -> None:
 
     # Shared corpus — same tokens drive every per-SAE pass, so feature numbers
     # line up between dashboards and bucket queries across all trials.
-    inference_root = Path("saes/sae_inference") / model_name
+    # Writes go directly to STORAGE_ROOT (Ocean) — inference outputs are
+    # mostly large HTML dashboards we don't want to stage and copy.
+    inference_root = STORAGE_ROOT / "sae_inference" / model_name
     inference_root.mkdir(parents=True, exist_ok=True)
     print(f"[corpus]  n_per_person={args.n_per_person}, context_size={args.context_size}")
     tokens = build_index_corpus(

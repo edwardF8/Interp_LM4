@@ -121,6 +121,22 @@ for L in 0 1 2 3; do
 done
 ```
 
+### Storage strategy
+
+Two paths are hardcoded as module constants at the top of `saes/trainSAE.py`:
+
+```python
+STORAGE_ROOT = Path("/jet/home/friedmae/data_storage/LM4_Results/saes")
+STAGING_ROOT = Path(os.environ.get("SAE_STAGING_ROOT", "saes"))
+```
+
+- **`STORAGE_ROOT`** — permanent home for trained SAEs and all inference outputs. Hardcoded to Ocean (data_storage) because `$HOME` on PSC has a ~25 GB quota that gets exhausted by mid-training checkpoints. Edit this constant if you move workspaces.
+- **`STAGING_ROOT`** — fast scratch where sae_lens writes mid-training checkpoints. On PSC `submit_job_psc.sh` sets `SAE_STAGING_ROOT=$LOCAL/sae_staging` (node-local SSD). On Mac the env var is unset, so it falls back to `./saes` — which is fine locally, no quota issue.
+
+After the held-out eval finishes, `train_one_run` `shutil.move`s the staged trial directory into `STORAGE_ROOT`. `runInference.py` writes directly to `STORAGE_ROOT` with no staging (its outputs — large HTML dashboards — aren't worth a copy).
+
+The wandb run summary gets a `storage_path` field so you can find the on-disk SAE from the wandb UI.
+
 ### CLI reference
 
 | flag                  | required | default                          | meaning                                  |
@@ -138,6 +154,8 @@ done
 | `--sae-mult`          | no       | 8                                | `d_sae = d_model × sae_mult`             |
 | `--l0`                | no       | 5.0                              | L0 sparsity coefficient                  |
 | `--lr`                | no       | 5e-5                             | learning rate                            |
+
+No `--output-root` / `--output-dir` — output location is the hardcoded `STORAGE_ROOT`. Change one place, every script picks it up.
 
 ### Internals
 

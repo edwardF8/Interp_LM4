@@ -20,7 +20,9 @@ never collide. <model-name> defaults to the parent dir of --model-dir (e.g.
 from __future__ import annotations
 
 import argparse
+import os
 import re
+import shutil
 from pathlib import Path
 
 import numpy as np
@@ -42,6 +44,25 @@ from saes.evalSAE import print_report, sae_eval
 from util.bio_sampler import BioSampler
 from util.condensed_tokenizer import CondensedTokenizer
 from util.diverse_subset import DiverseBioSubset  # type: ignore
+
+
+# ============================================================================
+# OUTPUT LOCATION   ← edit STORAGE_ROOT if you move workspaces
+# ----------------------------------------------------------------------------
+# Trained SAEs land permanently under STORAGE_ROOT. On PSC this MUST be on
+# Ocean (data_storage) — $HOME has a ~25 GB quota that fills up after a few
+# sweeps' worth of mid-training checkpoints. Anything written to $HOME during
+# training causes "Disk quota exceeded" inside safetensors mid-checkpoint and
+# kills the trial.
+#
+# During training, sae_lens writes ~5 mid-training checkpoints per trial. We
+# stage those on fast node-local scratch (SAE_STAGING_ROOT, set to $LOCAL by
+# submit_job_psc.sh on PSC) and move the final SAE dir to STORAGE_ROOT after
+# the held-out eval finishes. Mac runs (no $LOCAL) stage in ./saes locally —
+# fine, since there's no quota issue.
+# ============================================================================
+STORAGE_ROOT = Path("/jet/home/friedmae/data_storage/LM4_Results/saes")
+STAGING_ROOT = Path(os.environ.get("SAE_STAGING_ROOT", "saes"))
 
 
 # ============================================================================
@@ -90,6 +111,21 @@ def setup(args: argparse.Namespace) -> None:
     """
     global ARGS, device, model, tokenizer, sampler, eval_tokens
     ARGS = args
+
+    # Pre-flight: STORAGE_ROOT must be writable. Catches permission / typo
+    # bugs in <1s, instead of training for 30 minutes and dying at the move.
+    try:
+        STORAGE_ROOT.mkdir(parents=True, exist_ok=True)
+        probe = STORAGE_ROOT / f".write_probe.{os.getpid()}"
+        probe.touch()
+        probe.unlink()
+    except OSError as e:
+        raise SystemExit(
+            f"STORAGE_ROOT is not writable: {STORAGE_ROOT}\n  {e}\n"
+            f"Edit STORAGE_ROOT at the top of saes/trainSAE.py."
+        )
+    print(f"[storage] {STORAGE_ROOT}  (writable)")
+    print(f"[staging] {STAGING_ROOT}")
 
     if args.model_name is None:
         # '/jet/.../grid-L8-H6/final' -> 'grid-L8-H6'
@@ -229,9 +265,11 @@ def train_one_run() -> None:
 
     sae_name        = trial_name(hook_name, sae_mult, l0_coefficient, lr, epochs, n_examples)
     sweep_folder    = f"sweep-{sweep_id}" if sweep_id else "standalone"
-    SAE_RUN_DIR     = f"saes/sae_runs/{ARGS.model_name}/{sweep_folder}/{sae_name}"
-    checkpoint_path = f"{SAE_RUN_DIR}/checkpoints"
-    output_path     = f"{SAE_RUN_DIR}/final"
+    trial_rel       = Path("sae_runs") / ARGS.model_name / sweep_folder / sae_name
+    staging_dir     = STAGING_ROOT / trial_rel
+    storage_dir     = STORAGE_ROOT / trial_rel
+    checkpoint_path = str(staging_dir / "checkpoints")
+    output_path     = str(staging_dir / "final")
 
     subset = DiverseBioSubset(sampler, tokenizer, context_size=context_size, seed=SAE_seed)
     sae_dataset = subset.to_hf_dataset(n_examples)
@@ -281,7 +319,7 @@ def train_one_run() -> None:
         ),
         device=str(device),
         seed=SAE_seed,
-        n_checkpoints=5,
+        n_checkpoints=0,   # mid-training snapshots wasted disk; only final SAE saved
         output_path=output_path,
         checkpoint_path=checkpoint_path,
         dtype="float32",
@@ -297,12 +335,22 @@ def train_one_run() -> None:
     metrics = sae_eval(model, sae, eval_tokens, cfg.hook_name)
     print_report(metrics)
 
+    # Move trained SAE + checkpoints from fast staging to permanent storage.
+    # Doing it here (after eval, before wandb resume) means a crash during
+    # training only loses that trial's staging dir, not anything in storage.
+    storage_dir.parent.mkdir(parents=True, exist_ok=True)
+    if storage_dir.exists():
+        shutil.rmtree(storage_dir)
+    shutil.move(str(staging_dir), str(storage_dir))
+    print(f"[move]    {staging_dir} -> {storage_dir}")
+
     # sae_lens calls wandb.finish() inside runner.run(); resume to log final eval.
     if wandb.run is None:
         wandb.init(
             project=run_project, entity=run_entity, id=run_id, resume="allow"
         )
     payload = {f"final_eval/{k}": v for k, v in metrics.items()}
+    payload["storage_path"] = str(storage_dir)
     wandb.log(payload)
     wandb.run.summary.update(payload)
     wandb.finish()

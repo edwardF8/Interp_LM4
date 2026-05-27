@@ -35,11 +35,14 @@ module load anaconda3
 conda activate lm4
 # Keep HuggingFace + wandb caches on $LOCAL (fast node-local scratch) if set,
 # otherwise they default to $HOME and chew up your home quota.
+# SAE_STAGING_ROOT is where trainSAE.py writes mid-training checkpoints; the
+# trained SAE gets moved to STORAGE_ROOT (Ocean) after eval.
 if [ -n "${LOCAL:-}" ]; then
     export HF_HOME="$LOCAL/hf_cache"
     export TRANSFORMERS_CACHE="$LOCAL/hf_cache"
     export WANDB_CACHE_DIR="$LOCAL/wandb_cache"
-    mkdir -p "$HF_HOME" "$WANDB_CACHE_DIR"
+    export SAE_STAGING_ROOT="$LOCAL/sae_staging"
+    mkdir -p "$HF_HOME" "$WANDB_CACHE_DIR" "$SAE_STAGING_ROOT"
 fi
 
 # wandb auth: prefer `wandb login` once on the login node (writes ~/.netrc).
