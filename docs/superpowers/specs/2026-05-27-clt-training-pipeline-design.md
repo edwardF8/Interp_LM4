@@ -64,11 +64,20 @@ All tractable single-GPU at fp32.
 
 ### Save format
 
-Match circuit-tracer's `to_safetensors` / `_load_state_dict` layout: 2N safetensors files per CLT.
+Match circuit-tracer's `to_safetensors` / `_load_state_dict` layout exactly. Per CLT directory:
 
-- `W_enc_{i}.safetensors` contains keys: `W_enc_{i}`, `b_enc_{i}`, `b_dec_{i}`, `threshold_{i}`
-- `W_dec_{i}.safetensors` contains key: `W_dec_{i}`
-- `config.yaml` matches circuit-tracer's schema (model identifier, n_layers, d_model, d_transcoder, encoder/decoder hook templates)
+- `W_enc_{i}.safetensors` contains tensors: `W_enc_{i}` `[d_t, D]`, `b_enc_{i}` `[d_t]`, `b_dec_{i}` `[D]`, `threshold_{i}` `[d_t]` (presence of `threshold_*` → JumpReLU; absence → ReLU per circuit-tracer's loader)
+- `W_dec_{i}.safetensors` contains tensor: `W_dec_{i}` `[d_t, N-i, D]`
+- `config.yaml` — exact schema circuit-tracer expects (verified against `mntss/clt-gemma-2-2b-426k`, `mntss/clt-llama-3.2-1b-524k`, `mntss/clt-131k`):
+
+  ```yaml
+  model_name: <identifier of base model — used by ReplacementModel.from_pretrained>
+  model_kind: cross_layer_transcoder
+  feature_input_hook: hook_resid_mid
+  feature_output_hook: hook_mlp_out
+  ```
+
+  Dimensions (`n_layers`, `d_transcoder`, `d_model`) are inferred from tensor shapes at load time — not declared in YAML.
 
 A test (Section 4 test 5) asserts the on-disk keys match circuit-tracer's loader expectations so format drift fails fast.
 
@@ -146,10 +155,11 @@ Metrics computed on held-out:
 ```
 clts/
 ├── __init__.py
-├── clt.py          # CrossLayerTranscoder nn.Module (Section 1 architecture)
-├── trainCLT.py     # CLI + training loop (this section)
-├── evalCLT.py      # held-out eval helpers (Section 2 metrics)
-└── clt_runs/       # local symlink to STORAGE_ROOT/clt_runs (gitignored)
+├── clt.py             # CrossLayerTranscoder nn.Module (Section 1 architecture)
+├── trainCLT.py        # CLI + training loop (this section)
+├── evalCLT.py         # held-out eval helpers (Section 2 metrics)
+├── export_tokenizer.py # one-time CondensedTokenizer -> HF tokenizer dir (Section 5)
+└── clt_runs/          # local symlink to STORAGE_ROOT/clt_runs (gitignored)
 ```
 
 Mirrors the existing [saes/](../../../saes/) directory structure.
@@ -226,6 +236,18 @@ STORAGE_ROOT / clt_runs / <model-name> / <sweep-{id}|standalone> / <trial> / fin
 
 `STORAGE_ROOT` reused from [trainSAE.py:63](../../../saes/trainSAE.py#L63) (PSC Ocean: `/jet/home/friedmae/data_storage/LM4_Results`). Pre-flight write-probe at startup ([trainSAE.py:117-126](../../../saes/trainSAE.py#L117-L126) style) catches quota / permission issues in <1s.
 
+**Tokenizer directory** (separately, one per base model, not per CLT — generated once via `export_tokenizer.py`):
+
+```
+STORAGE_ROOT / hf_tokenizers / <model-name> /
+                                ├── tokenizer.json
+                                ├── tokenizer_config.json
+                                ├── special_tokens_map.json
+                                └── vocab.json
+```
+
+Loadable via `AutoTokenizer.from_pretrained(<path>)`. Required by subproject #2 (see Section 5).
+
 ### wandb
 
 Same project `interpLM4` as SAEs. Metric namespace `clt_*` to avoid collision:
@@ -294,6 +316,70 @@ After first successful training run, point Anthropic's `circuit-tracer` at the o
 - Sweep agent + hyperband (manually verified on first sweep)
 - Multi-GPU / DDP (single-GPU only)
 
+## Section 5 — Forward compatibility with subprojects #2 and #3
+
+This subproject must produce outputs that the existing Anthropic [`safety-research/circuit-tracer`](https://github.com/safety-research/circuit-tracer) library can consume without conversion. Verified against `mntss/clt-gemma-2-2b-426k`, `mntss/clt-llama-3.2-1b-524k`, `mntss/clt-131k`.
+
+### What subproject #1 must provide
+
+Three artifact directories — all produced as a normal part of CLT training (plus one tokenizer-export utility run once per base model):
+
+1. **Per-CLT directory** at `STORAGE_ROOT/clt_runs/<model-name>/<sweep>/<trial>/final/` containing the 2N safetensors files + `config.yaml` exactly as described in Section 1's "Save format" subsection. The CLT loader infers all dimensions from tensor shapes.
+
+2. **Base-model directory** (already exists per checkpoint, e.g. [model/BD_llama_3heads_12epoch_4layers/](../../../model/BD_llama_3heads_12epoch_4layers/)) — loadable via `AutoModelForCausalLM.from_pretrained(<dir>)`. No changes needed; `config.json` already reports `architectures: ["LlamaForCausalLM"]` which is what TransformerLens's Llama weight converter expects.
+
+3. **HF-loadable tokenizer directory** at `STORAGE_ROOT/hf_tokenizers/<model-name>/` — loadable via `AutoTokenizer.from_pretrained(<dir>)`. **This is new and required.** Subproject #2 cannot work without it because circuit-tracer's `create_graph_files` (run server-side at graph creation time) calls `AutoTokenizer.from_pretrained(graph.cfg.tokenizer_name)`. The current [util/condensed_tokenizer.py](../../../util/condensed_tokenizer.py) is a custom class with no `save_pretrained()` method.
+
+**Tokenizer export utility (new):** `clts/export_tokenizer.py` is a one-time script (~50 lines) that:
+- Loads a `CondensedTokenizer` via `from_remap_path(...)`
+- Builds an HF `PreTrainedTokenizerFast` whose vocabulary is the reduced (post-remap) GPT-2 token strings, indexed `0..vocab_size-1` matching the model's actual vocab
+- Saves via `tokenizer.save_pretrained(STORAGE_ROOT / "hf_tokenizers" / <model-name>)`
+- Includes a roundtrip test: `AutoTokenizer.from_pretrained(<saved-dir>).encode(text) == condensed.encode(text)` for several bios
+
+Run once per base model. Adds the matching `tests/test_export_tokenizer.py` covering the roundtrip.
+
+### What subproject #2 (attribution graphs) will need
+
+**No new attribution algorithm — use circuit-tracer's `attribute()` directly.** The subproject is a thin adapter (~30 lines) plus driver scripts:
+
+- `clts/load_replacement_model.py` (~10 lines): loads our local base model + tokenizer + trained CLT into a `circuit_tracer.replacement_model.TransformerLensReplacementModel`. Pattern:
+  ```python
+  hf_model = AutoModelForCausalLM.from_pretrained(model_dir)
+  tokenizer = AutoTokenizer.from_pretrained(hf_tokenizer_dir)
+  hooked = HookedTransformer.from_pretrained(
+      "meta-llama/Llama-3.2-1B",  # any known Llama alias — TL uses hf_model's weights
+      hf_model=hf_model, tokenizer=tokenizer,
+      fold_ln=False, center_writing_weights=False, center_unembed=False,
+  )
+  clt = load_clt(clt_dir, "hook_resid_mid", "hook_mlp_out")
+  model = TransformerLensReplacementModel.from_pretrained_and_transcoders(hooked, clt)
+  ```
+- Driver: `clts/build_attribution_graph.py` calls `attribute(prompt, model, target_logit)` → `Graph` object → `graph.to_pt(path)`.
+
+Non-obvious requirements documented for subproject #2:
+- CLT must be on the same device + dtype as the base model (`transcoder_set.to(model.cfg.device, model.cfg.dtype)`).
+- The base model is patched in place (MLPs and Unembed wrapped) — don't reuse the `HookedTransformer` for other purposes after `from_pretrained_and_transcoders`.
+- `cfg.tokenizer_name` must be a path resolvable by `AutoTokenizer.from_pretrained` (provided by step 3 above).
+- `scan_name` must be set (required by frontend to identify which CLT generated the graph; set per CLT identifier).
+
+### What subproject #3 (interactive UI) will need
+
+**No new frontend — use circuit-tracer's bundled viewer.** It ships as static HTML/CSS/JS in `circuit_tracer/frontend/assets/` (pre-built React/D3 bundle, no build step). The subproject is a thin glue:
+
+- `clts/serve_ui.py` (~5 lines): calls `circuit_tracer.frontend.local_server.serve(data_dir=<graph_files dir>, port=8032)`.
+- `clts/graph_to_frontend.py` (~10 lines): calls `circuit_tracer.utils.create_graph_files(graph, slug, output_path)` to convert `.pt` graph files to the frontend's JSON format.
+
+Optional later: a `features/` directory in Neuronpedia-compatible layout for the right-hand feature inspector panel. Without it, the node graph still works.
+
+### Forward-compatibility checklist
+
+- [x] CLT on-disk format matches circuit-tracer's `load_clt` expectations (Section 1)
+- [x] `config.yaml` schema locked to circuit-tracer's required 4 fields (Section 1)
+- [x] Base-model directory is `AutoModelForCausalLM.from_pretrained`-loadable (no change needed)
+- [x] Tokenizer-export utility produces `AutoTokenizer.from_pretrained`-loadable dir (new in Section 5)
+- [x] Test 5 asserts on-disk key names match circuit-tracer's loader (Section 4)
+- [x] Tokenizer roundtrip test (`test_export_tokenizer.py`) catches drift between CondensedTokenizer and exported HF tokenizer
+
 ## Dependencies / migrations
 
 - No new top-level dependencies. Reuses `transformer_lens`, `torch`, `safetensors`, `wandb` already in the project. Imports `sae_lens.saes.jumprelu_sae.JumpReLU` only.
@@ -301,6 +387,6 @@ After first successful training run, point Anthropic's `circuit-tracer` at the o
 
 ## Open questions deferred to implementation
 
-- Exact `config.yaml` schema circuit-tracer expects — will inspect their loader during implementation and match exactly.
 - Whether to expose `--jumprelu-init-threshold` and `--jumprelu-bandwidth` as CLI flags or hard-code at SAE defaults. Default: hard-code; expose only if tuning is needed.
 - Whether per-layer CE-recovered (single-MLP replacement diagnostic) is worth the extra eval cost during sweeps, or only computed on final-eval runs. Default: only on final eval, to keep sweep trials fast.
+- Which known Llama alias to pass to `HookedTransformer.from_pretrained(..., hf_model=..., tokenizer=...)` for the replacement-model adapter (subproject #2). Any Llama works since `hf_model` overrides the weights; will pick one with matching architectural flags during implementation.
