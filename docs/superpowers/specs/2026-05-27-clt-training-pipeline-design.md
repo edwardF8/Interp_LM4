@@ -236,17 +236,17 @@ STORAGE_ROOT / clt_runs / <model-name> / <sweep-{id}|standalone> / <trial> / fin
 
 `STORAGE_ROOT` reused from [trainSAE.py:63](../../../saes/trainSAE.py#L63) (PSC Ocean: `/jet/home/friedmae/data_storage/LM4_Results`). Pre-flight write-probe at startup ([trainSAE.py:117-126](../../../saes/trainSAE.py#L117-L126) style) catches quota / permission issues in <1s.
 
-**Tokenizer directory** (separately, one per base model, not per CLT — generated once via `export_tokenizer.py`):
+**Tokenizer directory** — **one total** across the whole project, not per model or per CLT. All `data/*/old_to_new.json` remap files in the project are byte-identical, so `CondensedTokenizer` is the same regardless of model or dataset. Generated once via `export_tokenizer.py`:
 
 ```
-STORAGE_ROOT / hf_tokenizers / <model-name> /
-                                ├── tokenizer.json
-                                ├── tokenizer_config.json
-                                ├── special_tokens_map.json
-                                └── vocab.json
+STORAGE_ROOT / hf_tokenizer /
+                  ├── tokenizer.json
+                  ├── tokenizer_config.json
+                  ├── special_tokens_map.json
+                  └── vocab.json
 ```
 
-Loadable via `AutoTokenizer.from_pretrained(<path>)`. Required by subproject #2 (see Section 5).
+Loadable via `AutoTokenizer.from_pretrained(<path>)`. Required by subproject #2 (see Section 5). If a future dataset is created with a different remap, the export utility detects the hash mismatch and writes to a remap-hash-suffixed subdirectory instead.
 
 ### wandb
 
@@ -328,15 +328,18 @@ Three artifact directories — all produced as a normal part of CLT training (pl
 
 2. **Base-model directory** (already exists per checkpoint, e.g. [model/BD_llama_3heads_12epoch_4layers/](../../../model/BD_llama_3heads_12epoch_4layers/)) — loadable via `AutoModelForCausalLM.from_pretrained(<dir>)`. No changes needed; `config.json` already reports `architectures: ["LlamaForCausalLM"]` which is what TransformerLens's Llama weight converter expects.
 
-3. **HF-loadable tokenizer directory** at `STORAGE_ROOT/hf_tokenizers/<model-name>/` — loadable via `AutoTokenizer.from_pretrained(<dir>)`. **This is new and required.** Subproject #2 cannot work without it because circuit-tracer's `create_graph_files` (run server-side at graph creation time) calls `AutoTokenizer.from_pretrained(graph.cfg.tokenizer_name)`. The current [util/condensed_tokenizer.py](../../../util/condensed_tokenizer.py) is a custom class with no `save_pretrained()` method.
+3. **HF-loadable tokenizer directory** at `STORAGE_ROOT/hf_tokenizer/` — loadable via `AutoTokenizer.from_pretrained(<dir>)`. **This is new and required.** Subproject #2 cannot work without it because circuit-tracer's `create_graph_files` (run server-side at graph creation time) calls `AutoTokenizer.from_pretrained(graph.cfg.tokenizer_name)`. The current [util/condensed_tokenizer.py](../../../util/condensed_tokenizer.py) is a custom class with no `save_pretrained()` method.
+
+**One tokenizer dir total** across the project — verified by hashing all `data/*/old_to_new.json` remap files (all byte-identical → same `CondensedTokenizer`). Not per model, not per dataset.
 
 **Tokenizer export utility (new):** `clts/export_tokenizer.py` is a one-time script (~50 lines) that:
 - Loads a `CondensedTokenizer` via `from_remap_path(...)`
 - Builds an HF `PreTrainedTokenizerFast` whose vocabulary is the reduced (post-remap) GPT-2 token strings, indexed `0..vocab_size-1` matching the model's actual vocab
-- Saves via `tokenizer.save_pretrained(STORAGE_ROOT / "hf_tokenizers" / <model-name>)`
+- Saves via `tokenizer.save_pretrained(STORAGE_ROOT / "hf_tokenizer")`
+- Verifies remap-file hash against the project's known remap; if a new remap is ever introduced, writes to a hash-suffixed subdirectory instead and logs a warning
 - Includes a roundtrip test: `AutoTokenizer.from_pretrained(<saved-dir>).encode(text) == condensed.encode(text)` for several bios
 
-Run once per base model. Adds the matching `tests/test_export_tokenizer.py` covering the roundtrip.
+Run **once total**, not per model. Adds the matching `tests/test_export_tokenizer.py` covering the roundtrip.
 
 ### What subproject #2 (attribution graphs) will need
 
