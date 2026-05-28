@@ -158,7 +158,7 @@ clts/
 ├── clt.py             # CrossLayerTranscoder nn.Module (Section 1 architecture)
 ├── trainCLT.py        # CLI + training loop (this section)
 ├── evalCLT.py         # held-out eval helpers (Section 2 metrics)
-├── export_tokenizer.py # one-time CondensedTokenizer -> HF tokenizer dir (Section 5)
+├── export_tokenizer.py # ensure_hf_tokenizer(data_dir) — idempotent, called from setup() (Section 5)
 └── clt_runs/          # local symlink to STORAGE_ROOT/clt_runs (gitignored)
 ```
 
@@ -236,17 +236,26 @@ STORAGE_ROOT / clt_runs / <model-name> / <sweep-{id}|standalone> / <trial> / fin
 
 `STORAGE_ROOT` reused from [trainSAE.py:63](../../../saes/trainSAE.py#L63) (PSC Ocean: `/jet/home/friedmae/data_storage/LM4_Results`). Pre-flight write-probe at startup ([trainSAE.py:117-126](../../../saes/trainSAE.py#L117-L126) style) catches quota / permission issues in <1s.
 
-**Tokenizer directory** — **one total** across the whole project, not per model or per CLT. All `data/*/old_to_new.json` remap files in the project are byte-identical, so `CondensedTokenizer` is the same regardless of model or dataset. Generated once via `export_tokenizer.py`:
+**Tokenizer directories** — content-addressed by remap-file hash. One dir per *unique* `old_to_new.json`, lazily produced and cached:
 
 ```
-STORAGE_ROOT / hf_tokenizer /
-                  ├── tokenizer.json
-                  ├── tokenizer_config.json
-                  ├── special_tokens_map.json
-                  └── vocab.json
+STORAGE_ROOT / hf_tokenizers / <remap-sha256-first8> /
+                                  ├── tokenizer.json
+                                  ├── tokenizer_config.json
+                                  ├── special_tokens_map.json
+                                  └── vocab.json
 ```
 
-Loadable via `AutoTokenizer.from_pretrained(<path>)`. Required by subproject #2 (see Section 5). If a future dataset is created with a different remap, the export utility detects the hash mismatch and writes to a remap-hash-suffixed subdirectory instead.
+`trainCLT.py`'s `setup()` calls `ensure_hf_tokenizer(data_dir)` before training begins. The function:
+1. Hashes `data_dir/old_to_new.json` (sha256, first 8 hex chars)
+2. If `STORAGE_ROOT/hf_tokenizers/<hash>/` exists, returns it (cache hit, no-op)
+3. Otherwise, builds and saves the HF tokenizer, then returns the path
+
+Idempotent and self-modularizing: any future data with a new remap automatically produces a new tokenizer dir without manual intervention; runs against existing data are no-ops after the first time. The resolved tokenizer path is logged at sweep startup and recorded in wandb config so the run is self-describing about which tokenizer it used.
+
+Currently all three `data/` dirs hash to the same value (verified), so the project has one tokenizer dir today. Future data with a different remap will produce a second alongside it; both coexist.
+
+Loadable via `AutoTokenizer.from_pretrained(<path>)`. Required by subproject #2 (see Section 5).
 
 ### wandb
 
@@ -299,11 +308,13 @@ python clts/trainCLT.py \
 
 Acceptance criteria:
 - Trainer starts; prints model + data + storage paths
+- `ensure_hf_tokenizer(data_dir)` runs and reports either a cache hit or new export, prints the resolved path
 - Prints Section 2 coverage stats (exposures per person, etc.)
 - Trains for one epoch without crashing
 - `clt_train/mse_total` decreases from step 0 to final step
 - `final_eval/ce_recovered` is reported and is a real number (not NaN)
 - Output dir contains all 2N safetensors files + `config.yaml`
+- A second invocation against the same data is a tokenizer-cache hit (no re-export)
 
 ### Format-compatibility check (manual, one-time)
 
@@ -328,18 +339,19 @@ Three artifact directories — all produced as a normal part of CLT training (pl
 
 2. **Base-model directory** (already exists per checkpoint, e.g. [model/BD_llama_3heads_12epoch_4layers/](../../../model/BD_llama_3heads_12epoch_4layers/)) — loadable via `AutoModelForCausalLM.from_pretrained(<dir>)`. No changes needed; `config.json` already reports `architectures: ["LlamaForCausalLM"]` which is what TransformerLens's Llama weight converter expects.
 
-3. **HF-loadable tokenizer directory** at `STORAGE_ROOT/hf_tokenizer/` — loadable via `AutoTokenizer.from_pretrained(<dir>)`. **This is new and required.** Subproject #2 cannot work without it because circuit-tracer's `create_graph_files` (run server-side at graph creation time) calls `AutoTokenizer.from_pretrained(graph.cfg.tokenizer_name)`. The current [util/condensed_tokenizer.py](../../../util/condensed_tokenizer.py) is a custom class with no `save_pretrained()` method.
+3. **HF-loadable tokenizer directory** at `STORAGE_ROOT/hf_tokenizers/<remap-hash>/` — loadable via `AutoTokenizer.from_pretrained(<dir>)`. **This is new and required.** Subproject #2 cannot work without it because circuit-tracer's `create_graph_files` (run server-side at graph creation time) calls `AutoTokenizer.from_pretrained(graph.cfg.tokenizer_name)`. The current [util/condensed_tokenizer.py](../../../util/condensed_tokenizer.py) is a custom class with no `save_pretrained()` method.
 
-**One tokenizer dir total** across the project — verified by hashing all `data/*/old_to_new.json` remap files (all byte-identical → same `CondensedTokenizer`). Not per model, not per dataset.
+**Content-addressed by remap hash.** One tokenizer dir per unique `old_to_new.json`. The project currently has one (all three `data/` dirs hash identically); future data with a different remap automatically produces a second.
 
-**Tokenizer export utility (new):** `clts/export_tokenizer.py` is a one-time script (~50 lines) that:
+**Tokenizer export module (new):** `clts/export_tokenizer.py` exposes a library function (not a manual script) that:
 - Loads a `CondensedTokenizer` via `from_remap_path(...)`
 - Builds an HF `PreTrainedTokenizerFast` whose vocabulary is the reduced (post-remap) GPT-2 token strings, indexed `0..vocab_size-1` matching the model's actual vocab
-- Saves via `tokenizer.save_pretrained(STORAGE_ROOT / "hf_tokenizer")`
-- Verifies remap-file hash against the project's known remap; if a new remap is ever introduced, writes to a hash-suffixed subdirectory instead and logs a warning
-- Includes a roundtrip test: `AutoTokenizer.from_pretrained(<saved-dir>).encode(text) == condensed.encode(text)` for several bios
+- Saves via `tokenizer.save_pretrained(STORAGE_ROOT / "hf_tokenizers" / <remap-hash>)`
+- Verifies a roundtrip: `AutoTokenizer.from_pretrained(<saved-dir>).encode(text) == condensed.encode(text)` for several bios
 
-Run **once total**, not per model. Adds the matching `tests/test_export_tokenizer.py` covering the roundtrip.
+Primary entry point: `ensure_hf_tokenizer(data_dir) -> Path`. **Idempotent**: cache-hit returns immediately. **Self-modularizing**: called automatically from `trainCLT.py`'s `setup()`, so every sweep / standalone run produces its own tokenizer on the first invocation against new data, and re-runs against the same data are no-ops. No manual export step.
+
+Adds matching `tests/test_export_tokenizer.py` covering: roundtrip equivalence, cache hit returns the same path without re-export, distinct remaps produce distinct dirs.
 
 ### What subproject #2 (attribution graphs) will need
 
