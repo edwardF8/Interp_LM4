@@ -222,34 +222,37 @@ def test_replacement_ce_matches_eval():
 
 
 @pytest.mark.integration
-def test_serve_ui_starts_and_serves_features(tmp_path):
+def test_serve_ui_serves_local_feature_dashboards(tmp_path):
     import json
     import time
     import urllib.error
     import urllib.request
+
     from clts.serve_ui import start_server
 
-    # minimal feature dir: features/<scan>/<idx>.json
-    feats = tmp_path / "features"
-    (feats / SCAN_NAME).mkdir(parents=True)
-    (feats / SCAN_NAME / "5.json").write_text(json.dumps({"index": 5}))
-    (tmp_path / "graphs").mkdir()
+    graph_dir = tmp_path / "graphs"
+    graph_dir.mkdir()
+    (graph_dir / "graph-metadata.json").write_text(json.dumps({"graphs": []}))
+    feats = tmp_path / "clt_features" / SCAN_NAME
+    feats.mkdir(parents=True)
+    (feats / "5.json").write_text(json.dumps({"index": 5}))
 
-    # serve() maps /data/<path> -> data_dir/<path>; pass tmp_path as data_dir
-    # so features live at /data/features/<scan>/5.json
-    server = start_server(graph_dir=str(tmp_path), port=8047)
+    server = start_server(graph_dir=str(graph_dir),
+                          features_dir=str(feats), scan_name=SCAN_NAME, port=8047)
     try:
-        url = f"http://localhost:8047/data/features/{SCAN_NAME}/5.json"
+        # loadFeature(scan="./data/<SCAN>", 5) fetches ./data/<SCAN>/5.json
+        # local_server.py /data/ handler maps that to graph_dir/<SCAN>/5.json
+        # which is the symlink -> feats/5.json created by start_server.
+        url = f"http://localhost:8047/data/{SCAN_NAME}/5.json"
         body = None
-        for _ in range(10):
+        for _ in range(20):  # brief readiness retry
             try:
                 with urllib.request.urlopen(url, timeout=5) as r:
                     body = json.loads(r.read())
                 break
-            except (urllib.error.URLError, ConnectionRefusedError):
-                time.sleep(0.2)
-        assert body is not None, "Server never became reachable"
-        assert body["index"] == 5
+            except (urllib.error.URLError, ConnectionError):
+                time.sleep(0.1)
+        assert body is not None and body["index"] == 5
     finally:
         server.stop()
 
@@ -283,3 +286,17 @@ def test_build_graph_birthday_recall(tmp_path):
     assert 0.0 <= r["error_influence_share"] <= 1.0
     assert r["target_logit_prob"] >= 0.0
     assert r["n_feature_nodes_after_pruning"] >= 0
+
+    # Confirm the graph is locally viewable: metadata.scan must start with
+    # "./data/" and end with SCAN_NAME so the bundled viewer's loadFeature
+    # routes fetches to the local server (init-feature-examples.js:85-87).
+    import json as _json
+    written = _json.loads((tmp_path / "test-bday.json").read_text())
+    graph_scan = written["metadata"]["scan"]
+    assert graph_scan.startswith("./data/"), (
+        f"graph scan {graph_scan!r} does not start with './data/' — "
+        "local viewer would fall through to Anthropic CDN"
+    )
+    assert graph_scan.endswith(SCAN_NAME), (
+        f"graph scan {graph_scan!r} does not end with {SCAN_NAME!r}"
+    )

@@ -102,12 +102,19 @@ def build_graph(model_dir, clt_dir, data_dir, scan_name, graph_dir, slug,
     pt_path = graph_dir / f"{slug}.pt"
     graph.to_pt(str(pt_path))
 
-    # create_graph_files kwarg is `scan` (not `scan_name`) — confirmed vs source
+    # Use a local-path scan so the bundled viewer loads feature dashboards from
+    # the local server.  init-feature-examples.js:85 routes scan strings that
+    # start with './' to util.getFile(`${scan}/${featureIndex}.json`), which the
+    # local_server.py /data/ handler serves from data_dir.  Scans that do NOT
+    # start with './' fall through to the CDN (Anthropic CloudFront), which
+    # won't have our custom model's features.  scan_name stays clean for the
+    # report and for naming the dashboard subfolder.
+    local_scan = f"./data/{scan_name}"
     create_graph_files(
         graph_or_path=graph,
         slug=slug,
         output_path=str(graph_dir),
-        scan=scan_name,
+        scan=local_scan,
         node_threshold=0.8,
         edge_threshold=0.98,
     )
