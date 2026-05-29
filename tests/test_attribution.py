@@ -222,6 +222,39 @@ def test_replacement_ce_matches_eval():
 
 
 @pytest.mark.integration
+def test_serve_ui_starts_and_serves_features(tmp_path):
+    import json
+    import time
+    import urllib.error
+    import urllib.request
+    from clts.serve_ui import start_server
+
+    # minimal feature dir: features/<scan>/<idx>.json
+    feats = tmp_path / "features"
+    (feats / SCAN_NAME).mkdir(parents=True)
+    (feats / SCAN_NAME / "5.json").write_text(json.dumps({"index": 5}))
+    (tmp_path / "graphs").mkdir()
+
+    # serve() maps /data/<path> -> data_dir/<path>; pass tmp_path as data_dir
+    # so features live at /data/features/<scan>/5.json
+    server = start_server(graph_dir=str(tmp_path), port=8047)
+    try:
+        url = f"http://localhost:8047/data/features/{SCAN_NAME}/5.json"
+        body = None
+        for _ in range(10):
+            try:
+                with urllib.request.urlopen(url, timeout=5) as r:
+                    body = json.loads(r.read())
+                break
+            except (urllib.error.URLError, ConnectionRefusedError):
+                time.sleep(0.2)
+        assert body is not None, "Server never became reachable"
+        assert body["index"] == 5
+    finally:
+        server.stop()
+
+
+@pytest.mark.integration
 @_needs_artifacts
 def test_build_graph_birthday_recall(tmp_path):
     from clts.build_attribution_graph import build_graph
