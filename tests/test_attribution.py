@@ -219,3 +219,31 @@ def test_replacement_ce_matches_eval():
         f"adapter ce_clt {r_adapter['ce_clt']} vs canonical {r_canon['ce_clt']}"
     )
     assert math.isfinite(r_adapter["ce_recovered"])
+
+
+@pytest.mark.integration
+@_needs_artifacts
+def test_build_graph_birthday_recall(tmp_path):
+    from clts.build_attribution_graph import build_graph
+    from clts.feature_index import cantor_unpair
+    out = build_graph(
+        model_dir=MODEL_DIR, clt_dir=CLT_DIR, data_dir=DATA_DIR,
+        scan_name=SCAN_NAME, prompt=None, device="cpu",
+        graph_dir=str(tmp_path), slug="test-bday", max_feature_nodes=512,
+    )
+    assert (tmp_path / "test-bday.json").exists()
+    assert (tmp_path / "graph-metadata.json").exists()
+    assert out["pt_path"]
+    import torch
+    from clts.clt import CrossLayerTranscoder
+    clt = CrossLayerTranscoder.load_from_dir(CLT_DIR)
+    graph = out["graph"]
+    for row in graph.active_features[graph.selected_features].tolist():
+        layer, _pos, feat = row
+        z = (layer + feat) * (layer + feat + 1) // 2 + feat
+        assert cantor_unpair(z) == (layer, feat)
+        assert 0 <= layer < clt.n_layers and 0 <= feat < clt.d_transcoder
+    r = out["report"]
+    assert 0.0 <= r["error_influence_share"] <= 1.0
+    assert r["target_logit_prob"] >= 0.0
+    assert r["n_feature_nodes_pruned"] >= 0
