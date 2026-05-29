@@ -8,14 +8,19 @@ from __future__ import annotations
 from pathlib import Path
 
 import torch
-from transformers import LlamaForCausalLM
+from transformers import LlamaConfig, LlamaForCausalLM
 from transformer_lens import HookedTransformer, HookedTransformerConfig
 from transformer_lens.loading_from_pretrained import convert_llama_weights  # type: ignore
 
 
-def build_tl_config(hf_cfg, device: str,
+def build_tl_config(hf_cfg: LlamaConfig, device: str,
                     dtype: torch.dtype = torch.float32) -> HookedTransformerConfig:
     """Translate an HF LlamaConfig into a HookedTransformerConfig."""
+    # Deliberately do NOT set `eps`: TransformerLens defaults RMS-norm eps to
+    # 1e-5, which is what trainCLT/evalCLT use (they never set it), so the CLT
+    # was trained and evaluated against an eps=1e-5 rendering of the model.
+    # Attribution must use the SAME model the CLT saw, so we match that here
+    # rather than the HF checkpoint's rms_norm_eps=1e-6.
     return HookedTransformerConfig(
         n_layers=hf_cfg.num_hidden_layers,
         d_model=hf_cfg.hidden_size,
@@ -34,7 +39,6 @@ def build_tl_config(hf_cfg, device: str,
         tie_word_embeddings=hf_cfg.tie_word_embeddings,
         initializer_range=hf_cfg.initializer_range,
         n_key_value_heads=hf_cfg.num_key_value_heads,
-        eps=getattr(hf_cfg, "rms_norm_eps", 1e-5),
         dtype=dtype,
         device=device,
     )

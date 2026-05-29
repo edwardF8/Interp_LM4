@@ -35,4 +35,11 @@ def test_build_hooked_transformer_matches_hf():
         tl_logits = tl(ids, return_type="logits")
         hf_logits = hf(ids).logits
     assert tl_logits.shape == hf_logits.shape
-    assert torch.allclose(tl_logits, hf_logits, atol=2e-3, rtol=2e-3)
+    # TL renders RMS-norm at eps=1e-5 (TL default, matching how trainCLT/evalCLT build
+    # the model and how the CLT was trained).  The HF checkpoint uses eps=1e-6, so the
+    # logits agree only to ~5e-3.  This is intentional fidelity to the training
+    # environment, not the raw HF checkpoint.  atol=1e-2 comfortably covers the ~5e-3
+    # eps gap while still catching a broken build (which would diverge by order 1+).
+    assert torch.allclose(tl_logits, hf_logits, atol=1e-2, rtol=1e-2)
+    # Sanity-check: next-token argmax at the last position must agree despite the eps gap.
+    assert tl_logits[0, -1].argmax() == hf_logits[0, -1].argmax()
