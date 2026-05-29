@@ -25,7 +25,11 @@ CLT_DIR = "clts/clt_runs/grid-L4-H6/mult16_l02_lr0.0001_ep50_n10000/final"
 SCAN_NAME = "grid-L4-H6"
 DATA_DIR = "data/bioS_N-Bd_final_grid"
 
-_HAS_ARTIFACTS = os.path.isdir(MODEL_DIR) and os.path.isdir(CLT_DIR)
+_HAS_ARTIFACTS = (
+    os.path.isdir(MODEL_DIR)
+    and os.path.isdir(CLT_DIR)
+    and os.path.isfile(os.path.join(DATA_DIR, "old_to_new.json"))
+)
 _needs_artifacts = pytest.mark.skipif(
     not _HAS_ARTIFACTS, reason="model/CLT artifacts not present"
 )
@@ -196,6 +200,7 @@ def test_replacement_ce_matches_eval():
     behaves identically (<1e-3) to the canonical build under full MLP
     replacement, and that the CLT actually recovers CE (finite recovered).
     """
+    import math
     import torch
 
     from clts.clt import CrossLayerTranscoder
@@ -213,5 +218,4 @@ def test_replacement_ce_matches_eval():
     assert abs(r_adapter["ce_clt"] - r_canon["ce_clt"]) < 1e-3, (
         f"adapter ce_clt {r_adapter['ce_clt']} vs canonical {r_canon['ce_clt']}"
     )
-    import math
     assert math.isfinite(r_adapter["ce_recovered"])

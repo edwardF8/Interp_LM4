@@ -24,16 +24,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from util.condensed_tokenizer import CondensedTokenizer  # noqa: E402
-
-
-def _storage_root() -> Path:
-    env = os.environ.get("CLT_STORAGE_ROOT")
-    if env:
-        return Path(env)
-    psc_root = Path("/jet/home/friedmae/data_storage/LM4_Results")
-    if psc_root.exists():
-        return psc_root
-    return Path(__file__).resolve().parent.parent / "clt_storage"
+from clts.storage import storage_root as _storage_root  # noqa: E402
 
 
 def _remap_hash(remap_path: Path) -> str:

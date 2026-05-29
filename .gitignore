@@ -31,5 +31,4 @@ saes/sae_inference/
 
 # CLT attribution graph venv and outputs
 clts/.venv-ct/
-clts/clt_graphs/
-clts/clt_features/
+clt_storage/

@@ -95,7 +95,6 @@ def load_replacement_model(
     cfg = build_tl_config(hf_model.config, device, dtype)
     cfg.model_name = scan_name                   # invariant 2: non-None string
     cfg.tokenizer_name = str(hf_tokenizer_dir)    # invariant 3: graph-file step
-    cfg.dtype = dtype
 
     # invariant 1: load weights BEFORE _configure_replacement_model wraps the
     # mlp/unembed modules (block.mlp -> ReplacementMLP, old weights move under
