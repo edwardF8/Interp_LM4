@@ -28,8 +28,7 @@ def default_birthday_prompt(data_dir):
     tokenizes entirely within the model's condensed vocab (no OOV subwords).
     Falls back to 'Gage Clay was born on' if none found in the first 500.
     """
-    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-    from util.condensed_tokenizer import CondensedTokenizer  # noqa: E402
+    from util.condensed_tokenizer import CondensedTokenizer
 
     data_dir = Path(data_dir)
     try:

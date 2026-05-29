@@ -233,6 +233,7 @@ def test_build_graph_birthday_recall(tmp_path):
     )
     assert (tmp_path / "test-bday.json").exists()
     assert (tmp_path / "graph-metadata.json").exists()
+    assert (tmp_path / "test-bday.report.json").exists()
     assert out["pt_path"]
     import torch
     from clts.clt import CrossLayerTranscoder
