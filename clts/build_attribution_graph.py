@@ -129,9 +129,38 @@ def build_graph(model_dir, clt_dir, data_dir, scan_name, graph_dir, slug,
         **_graph_quality_metrics(graph),
     }
     (graph_dir / f"{slug}.report.json").write_text(json.dumps(report, indent=2))
+
+    # Reproducibility sidecar (spec Section 6/8): record inputs + pinned library
+    # versions next to the graph. Attribution is deterministic, so identical
+    # inputs + versions reproduce the graph.
+    import importlib.metadata as _im
+
+    def _ver(pkg):
+        try:
+            return _im.version(pkg)
+        except Exception:
+            return "unknown"
+
+    run_meta = {
+        "scan_name": scan_name,
+        "slug": slug,
+        "prompt": prompt,
+        "target": target,
+        "model_dir": str(model_dir),
+        "clt_dir": str(clt_dir),
+        "data_dir": str(data_dir),
+        "max_feature_nodes": max_feature_nodes,
+        "max_n_logits": max_n_logits,
+        "desired_logit_prob": desired_logit_prob,
+        "versions": {p: _ver(p) for p in
+                     ("circuit-tracer", "transformers", "transformer-lens", "torch")},
+    }
+    (graph_dir / "run-meta.json").write_text(json.dumps(run_meta, indent=2))
+
     if verbose:
         print(json.dumps(report, indent=2))
-    return {"graph": graph, "pt_path": str(pt_path), "report": report}
+    return {"graph": graph, "pt_path": str(pt_path), "report": report,
+            "run_meta": run_meta}
 
 
 def main():

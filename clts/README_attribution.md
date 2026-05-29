@@ -99,6 +99,7 @@ Output (written to `storage_root()/clt_graphs/grid-L4-H6/bday-recall/`):
 | `graph-metadata.json` | circuit-tracer metadata index |
 | `bday-recall.pt` | raw graph tensor |
 | `bday-recall.report.json` | fidelity report (see below) |
+| `run-meta.json` | reproducibility sidecar: inputs (model/clt/data dirs, prompt) + pinned circuit-tracer/transformers/transformer-lens/torch versions |
 
 Key flags:
 
@@ -214,7 +215,7 @@ Flags: `--model-dir`, `--clt-dir`, `--data-dir`, `--scan-name` (all required);
 ## Acceptance checklist
 
 - [ ] Graph builds without error; report JSON is printed to stdout.
-- [ ] `<slug>.json`, `graph-metadata.json`, `<slug>.pt`, `<slug>.report.json`
+- [ ] `<slug>.json`, `graph-metadata.json`, `<slug>.pt`, `<slug>.report.json`, `run-meta.json`
       are all written under `storage_root()/clt_graphs/<scan>/<slug>/`.
 - [ ] `report["replacement_score"]` is finite and in [0, 1].
 - [ ] Browser: `http://localhost:8032` renders the graph.
