@@ -28,3 +28,8 @@ saes/sae_inference/
 
 # Random extras
 *.tar.gz
+
+# CLT attribution graph venv and outputs
+clts/.venv-ct/
+clts/clt_graphs/
+clts/clt_features/

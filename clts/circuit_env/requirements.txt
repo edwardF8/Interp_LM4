@@ -1,0 +1,13 @@
+# Dedicated venv for CLT attribution graphs (circuit-tracer).
+# Isolated from the training/SAE env so its transformers pin cannot
+# downgrade the rest of the project. Install circuit-tracer from a local
+# clone (see README.md), which pulls these as resolved deps; pins below
+# are the ones we depend on directly.
+torch>=2.0.0
+transformer-lens>=2.16.0
+transformers>=4.56.0,<=4.57.3
+safetensors>=0.5.0
+pydantic>=2.0.0
+pyyaml>=6.0
+numpy>=1.24.0
+pytest>=8.0.0
