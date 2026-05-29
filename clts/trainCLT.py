@@ -18,9 +18,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
-from transformers import LlamaForCausalLM
-from transformer_lens import HookedTransformer, HookedTransformerConfig
-from transformer_lens.loading_from_pretrained import convert_llama_weights  # type: ignore
+from transformer_lens import HookedTransformer
 
 # Project imports.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -106,32 +104,8 @@ def setup(args: argparse.Namespace) -> None:
 
     device = pick_device()
     dtype = torch.float32
-
-    hf_model = LlamaForCausalLM.from_pretrained(args.model_dir, torch_dtype=dtype).eval()
-    hf_cfg = hf_model.config
-    tl_cfg = HookedTransformerConfig(
-        n_layers=hf_cfg.num_hidden_layers,
-        d_model=hf_cfg.hidden_size,
-        d_head=hf_cfg.hidden_size // hf_cfg.num_attention_heads,
-        n_heads=hf_cfg.num_attention_heads,
-        d_mlp=hf_cfg.intermediate_size,
-        d_vocab=hf_cfg.vocab_size,
-        n_ctx=hf_cfg.max_position_embeddings,
-        act_fn="silu",
-        normalization_type="RMS",
-        gated_mlp=True,
-        positional_embedding_type="rotary",
-        rotary_base=int(getattr(hf_cfg, "rope_theta", 10000.0)),
-        rotary_dim=hf_cfg.hidden_size // hf_cfg.num_attention_heads,
-        final_rms=True,
-        tie_word_embeddings=hf_cfg.tie_word_embeddings,
-        initializer_range=hf_cfg.initializer_range,
-        n_key_value_heads=hf_cfg.num_key_value_heads,
-        device=device,
-    )
-    model = HookedTransformer(tl_cfg)
-    model.load_state_dict(convert_llama_weights(hf_model, tl_cfg), strict=False)
-    model.to(device).eval()
+    from clts.tl_model import build_hooked_transformer
+    model = build_hooked_transformer(args.model_dir, device, dtype)
     print(f"[model]   {args.model_dir} (name: {args.model_name})")
     print(f"          n_layers={model.cfg.n_layers}, d_model={model.cfg.d_model}, "
           f"n_heads={model.cfg.n_heads}, d_vocab={model.cfg.d_vocab}")
