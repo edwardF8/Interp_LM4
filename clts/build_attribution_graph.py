@@ -49,48 +49,28 @@ def default_birthday_prompt(data_dir):
     return "Gage Clay was born on"
 
 
-def _error_influence_share(graph) -> dict:
-    """Fraction of total node influence carried by MLP-reconstruction error
-    nodes. Node order: [features, errors, tokens, logits].
+def _graph_quality_metrics(graph) -> dict:
+    """Per-graph fidelity metrics using circuit-tracer's OWN scoring (verbatim).
 
-    Uses compute_node_influence (power-iteration on the normalized adjacency)
-    exactly as compute_graph_scores does, rather than prune_graph's cumulative
-    rank scores (which are sorted fractions, not raw influence magnitudes).
+    compute_graph_scores returns the standard replacement/completeness scores
+    (no bespoke clamping or denominator choices). We surface both, plus the
+    spec's error-influence share (1 - replacement_score, the library-consistent
+    error fraction of token->logit influence) and the feature-node count that
+    SURVIVES pruning (the spec's "feature-node count after pruning").
     """
-    from circuit_tracer.graph import (
-        compute_node_influence,
-        normalize_matrix,
-        prune_graph,
-    )
+    from circuit_tracer.graph import compute_graph_scores, prune_graph
 
-    # Node group sizes — confirmed against graph.py compute_graph_scores source
+    replacement_score, completeness_score = compute_graph_scores(graph)
+
     n_features = len(graph.selected_features)
-    n_tokens = len(graph.input_tokens)   # == graph.n_pos
-    n_logits = len(graph.logit_targets)
-    error_start = n_features
-    error_end = error_start + n_tokens * graph.cfg.n_layers
-    token_end = error_end + n_tokens
-
-    adj = graph.adjacency_matrix.cpu()
-    logit_weights = torch.zeros(adj.shape[0])
-    logit_weights[-n_logits:] = graph.logit_probabilities.cpu()
-
-    node_influence = compute_node_influence(adj, logit_weights)
-
-    scores = node_influence.clamp(min=0)
-    total = scores[:token_end].sum().item()
-    err = scores[error_start:error_end].sum().item()
-    error_share = (err / total) if total > 1e-12 else float("nan")
-
-    # Count feature nodes pruned away by prune_graph at default thresholds
-    node_mask, _edge_mask, _cumscores = (
-        el.cpu() for el in prune_graph(graph)
-    )
-    n_pruned = int((~node_mask[:n_features]).sum().item())
+    node_mask, _edge_mask, _cum = (el.cpu() for el in prune_graph(graph))
+    n_kept = int(node_mask[:n_features].sum().item())   # feature nodes AFTER pruning
 
     return {
-        "error_influence_share": error_share,
-        "n_feature_nodes_pruned": n_pruned,
+        "replacement_score": float(replacement_score),
+        "completeness_score": float(completeness_score),
+        "error_influence_share": float(1.0 - replacement_score),
+        "n_feature_nodes_after_pruning": n_kept,
     }
 
 
@@ -140,7 +120,7 @@ def build_graph(model_dir, clt_dir, data_dir, scan_name, graph_dir, slug,
         "scan_name": scan_name,
         "top_logit_token": top_token,
         "target_logit_prob": float(graph.logit_probabilities[0].item()),
-        **_error_influence_share(graph),
+        **_graph_quality_metrics(graph),
     }
     (graph_dir / f"{slug}.report.json").write_text(json.dumps(report, indent=2))
     if verbose:

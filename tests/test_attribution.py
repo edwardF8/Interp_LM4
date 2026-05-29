@@ -244,6 +244,8 @@ def test_build_graph_birthday_recall(tmp_path):
         assert cantor_unpair(z) == (layer, feat)
         assert 0 <= layer < clt.n_layers and 0 <= feat < clt.d_transcoder
     r = out["report"]
+    assert 0.0 <= r["replacement_score"] <= 1.0
+    assert 0.0 <= r["completeness_score"] <= 1.0
     assert 0.0 <= r["error_influence_share"] <= 1.0
     assert r["target_logit_prob"] >= 0.0
-    assert r["n_feature_nodes_pruned"] >= 0
+    assert r["n_feature_nodes_after_pruning"] >= 0
