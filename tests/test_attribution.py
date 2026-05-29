@@ -257,6 +257,69 @@ def test_serve_ui_serves_local_feature_dashboards(tmp_path):
         server.stop()
 
 
+# ---------------------------------------------------------------------------
+# Task 6: per-feature dashboard generator
+# ---------------------------------------------------------------------------
+
+def test_decoder_logit_effects_shape_and_values():
+    import torch
+    from clts.gen_feature_dashboards import decoder_logit_effects
+
+    class FakeCLT:
+        n_layers, d_transcoder, d_model = 2, 3, 4
+        def __init__(self):
+            self.W_dec = [torch.zeros(3, 2, 4), torch.zeros(3, 1, 4)]
+            self.W_dec[0][0, 0, :] = torch.tensor([1., 0., 0., 0.])
+            self.W_dec[0][0, 1, :] = torch.tensor([0., 1., 0., 0.])
+
+    torch.manual_seed(0)
+    W_U = torch.randn(4, 5)
+    eff = decoder_logit_effects(FakeCLT(), W_U)
+    assert eff.shape == (2, 3, 5)               # [n_layers, d_t, vocab]
+    expected = torch.tensor([1., 1., 0., 0.]) @ W_U
+    assert torch.allclose(eff[0, 0], expected, atol=1e-5)
+
+
+def test_build_feature_model_validates_schema():
+    from circuit_tracer.frontend.feature_models import Model as FeatureModel
+    from clts.gen_feature_dashboards import build_feature_model
+    from clts.feature_index import cantor_pair
+
+    examples = [
+        {"tokens": ["a", "b", "c"], "acts": [0.0, 1.2, 0.3], "argmax": 1},
+        {"tokens": ["x", "y"], "acts": [0.9, 0.0], "argmax": 0},
+    ]
+    m = build_feature_model(
+        layer=2, feat_idx=100, examples=examples,
+        act_min=0.0, act_max=1.2, histogram=[3.0, 1.0, 2.0],
+        quantile_values=[0.0, 0.6, 1.2], activation_frequency=0.05,
+        top_logits=["Jan", "Feb"], bottom_logits=["zzz", "qqq"],
+    )
+    obj = FeatureModel.model_validate(m)          # raises if schema-invalid
+    assert obj.index == cantor_pair(2, 100)
+    assert obj.examples_quantiles[0].examples[0].tokens == ["a", "b", "c"]
+
+
+@pytest.mark.integration
+@_needs_artifacts
+def test_generate_dashboards_small(tmp_path):
+    import glob, json
+    from circuit_tracer.frontend.feature_models import Model as FeatureModel
+    from clts.gen_feature_dashboards import generate_dashboards
+
+    out = generate_dashboards(
+        model_dir=MODEL_DIR, clt_dir=CLT_DIR, data_dir=DATA_DIR,
+        scan_name=SCAN_NAME, features_root=str(tmp_path),
+        device="cpu", n_per_person=1, context_size=32, n_people=8,
+        top_k=5, n_bins=10,
+    )
+    written = glob.glob(str(tmp_path / SCAN_NAME / "*.json"))
+    assert len(written) > 0
+    for p in written[:20]:
+        FeatureModel.model_validate(json.loads(open(p).read()))
+    assert out["n_features_written"] == len(written)
+
+
 @pytest.mark.integration
 @_needs_artifacts
 def test_build_graph_birthday_recall(tmp_path):
