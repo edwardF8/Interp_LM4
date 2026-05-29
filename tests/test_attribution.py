@@ -363,3 +363,21 @@ def test_build_graph_birthday_recall(tmp_path):
     assert graph_scan.endswith(SCAN_NAME), (
         f"graph scan {graph_scan!r} does not end with {SCAN_NAME!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Task 7: intervention-based graph validation
+# ---------------------------------------------------------------------------
+
+@pytest.mark.integration
+@_needs_artifacts
+def test_intervention_changes_target_logit():
+    from clts.validate_graph import ablate_top_feature_effect
+
+    res = ablate_top_feature_effect(
+        model_dir=MODEL_DIR, clt_dir=CLT_DIR, data_dir=DATA_DIR,
+        scan_name=SCAN_NAME, device="cpu", max_feature_nodes=512,
+    )
+    assert "target_prob_before" in res and "target_prob_after" in res
+    # Ablating the single most influential feature should MOVE the target prob.
+    assert abs(res["target_prob_after"] - res["target_prob_before"]) > 1e-6
