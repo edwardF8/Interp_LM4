@@ -70,7 +70,7 @@ class CrossLayerTranscoder(nn.Module):
 
         self.W_dec = nn.ParameterList([
             nn.Parameter(torch.empty(d_t, N - i, D)) for i in range(N)
-        ])
+        ]) #One for each layer
 
         # Kaiming-uniform init for encoder/decoder weights (matches typical
         # sae_lens init; avoids any param staying at zero from above).
@@ -79,7 +79,8 @@ class CrossLayerTranscoder(nn.Module):
             nn.init.kaiming_uniform_(self.W_dec[i], a=5 ** 0.5)
 
     def encode(self, x_list: list[torch.Tensor]) -> list[torch.Tensor]:
-        """For each source L, compute features a[L] = JumpReLU(W_enc[L] x[L] + b_enc[L])."""
+        """For each source laeyer L, compute read in inputs from the
+        residual stream,a[L] = JumpReLU(W_enc[L] x[L] + b_enc[L])."""
         assert len(x_list) == self.n_layers, \
             f"expected {self.n_layers} inputs, got {len(x_list)}"
         a_list = []
@@ -90,11 +91,15 @@ class CrossLayerTranscoder(nn.Module):
         return a_list
 
     def decode(self, a_list: list[torch.Tensor]) -> list[torch.Tensor]:
-        """For each target L', sum decoder contributions from sources L <= L'."""
+        """For each target L', sum decoder contributions from sources L <= L'.
+        For each layer,
+            yhat = bias for L' + summation W_dec from L -> L' @ a_list[L]
+            yhat = bias for L' + summation Decoder from L -> L' @ post-encoder from L
+        """
         y_hat_list = []
         batch_size = a_list[0].shape[0]
         for L_prime in range(self.n_layers):
-            y_hat = self.b_dec[L_prime].unsqueeze(0).expand(batch_size, -1).clone()
+            y_hat = self.b_dec[L_prime].unsqueeze(0).expand(batch_size, -1).clone() #add bias
             for L in range(L_prime + 1):
                 target_idx = L_prime - L
                 dec_slice = self.W_dec[L][:, target_idx, :]  # [d_t, D]
