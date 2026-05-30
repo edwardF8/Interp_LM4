@@ -224,21 +224,22 @@ def generate_dashboards(
     from util.condensed_tokenizer import CondensedTokenizer
     tokenizer = CondensedTokenizer.from_remap_path(data_dir / "old_to_new.json")
 
-    # Top/bottom 10 token strings for each feature (computed once).
+    # Decode the whole (tiny) vocab ONCE into a lookup table so the hot loops
+    # below never call tokenizer.decode per token -- that per-token decode in
+    # nested loops was the O(features * positions * context) blow-up.
     TOP_BOTTOM = 10
-    top_logits_per: list[list[list[str]]] = []
-    bot_logits_per: list[list[list[str]]] = []
-    for L in range(N):
-        top_row = []
-        bot_row = []
-        for f in range(d_t):
-            eff_f = effects[L, f]
-            top_ids = eff_f.topk(min(TOP_BOTTOM, eff_f.numel())).indices.tolist()
-            bot_ids = eff_f.topk(min(TOP_BOTTOM, eff_f.numel()), largest=False).indices.tolist()
-            top_row.append([tokenizer.decode([i]) for i in top_ids])
-            bot_row.append([tokenizer.decode([i]) for i in bot_ids])
-        top_logits_per.append(top_row)
-        bot_logits_per.append(bot_row)
+    vocab_size = int(effects.shape[-1])
+    id2str = [tokenizer.decode([i]) for i in range(vocab_size)]
+
+    # Top/bottom logit tokens per feature via ONE batched topk on CPU -- no
+    # per-feature GPU->CPU sync, no per-token decode.
+    eff_cpu = effects.detach().to("cpu")
+    k = min(TOP_BOTTOM, vocab_size)
+    top_idx = eff_cpu.topk(k, dim=-1).indices                  # [N, d_t, k]
+    bot_idx = eff_cpu.topk(k, dim=-1, largest=False).indices   # [N, d_t, k]
+    top_logits_per = [[[id2str[int(i)] for i in top_idx[L, f]] for f in range(d_t)] for L in range(N)]
+    bot_logits_per = [[[id2str[int(i)] for i in bot_idx[L, f]] for f in range(d_t)] for L in range(N)]
+    print(f"[gen] logit tables ready ({N}x{d_t} features)", flush=True)
 
     # ---- Build corpus tokens -----------------------------------------------
     all_tokens, _ = _build_corpus(
@@ -254,7 +255,11 @@ def generate_dashboards(
     act_max_arr = np.zeros((N, d_t), dtype=np.float32)
     fire_count = np.zeros((N, d_t), dtype=np.int64)
 
+    n_batches = (n_rows + batch_rows - 1) // batch_rows
+    print(f"[gen] pass 1/2 over {n_rows} rows ({n_batches} batches)", flush=True)
     for start in range(0, n_rows, batch_rows):
+        if (start // batch_rows) % 20 == 0:
+            print(f"[gen]   pass 1 batch {start // batch_rows}/{n_batches}", flush=True)
         batch = all_tokens[start:start + batch_rows]
         with torch.no_grad():
             x_list, _ = capture_activations(model, batch)
@@ -286,9 +291,15 @@ def generate_dashboards(
     # Initialize histograms as arrays.
     hist_counts = np.zeros((N, d_t, n_bins), dtype=np.float32)
 
+    print(f"[gen] pass 2/2 over {n_rows} rows ({n_batches} batches)", flush=True)
     for start in range(0, n_rows, batch_rows):
+        if (start // batch_rows) % 20 == 0:
+            print(f"[gen]   pass 2 batch {start // batch_rows}/{n_batches}", flush=True)
         batch = all_tokens[start:start + batch_rows]
         B, T = batch.shape
+        # Decode each row's tokens ONCE per batch (via the vocab table) and reuse
+        # across every layer/feature -- instead of decoding per (feature, row).
+        row_strs = [[id2str[int(t)] for t in row] for row in batch.cpu().tolist()]
         with torch.no_grad():
             x_list, _ = capture_activations(model, batch)
             a_list = clt.encode(x_list)   # [B*T, d_t] each
@@ -312,31 +323,33 @@ def generate_dashboards(
                     counts, _ = np.histogram(fired_pos, bins=bins_edges)
                     hist_counts[L, f] += counts
 
-                # Top-k examples by max activation within context window.
+                # Keep the top_k examples with the HIGHEST max activation.
+                # Min-heap keyed on ctx_max: heap[0] is the smallest kept, so a
+                # new row is added only if it beats it. (The old code keyed on
+                # -ctx_max with heappushpop, which evicted the highest and kept
+                # the lowest -- the dashboards showed the least-activating text.)
                 feat_ctx = a_reshaped[:, :, f]   # [B, T]
+                row_max = feat_ctx.max(axis=1)   # [B]
+                heap = heaps[L][f]
                 for b in range(B):
-                    ctx_acts = feat_ctx[b]        # [T]
-                    ctx_max = float(ctx_acts.max())
+                    ctx_max = float(row_max[b])
                     if ctx_max <= 0:
                         continue
-                    # Convert token ids to strings.
-                    tok_ids = batch[b].cpu().tolist()
-                    tok_strs = [tokenizer.decode([tid]) for tid in tok_ids]
-                    acts_list = ctx_acts.tolist()
-                    argmax_idx = int(ctx_acts.argmax())
-
-                    heap = heaps[L][f]
-                    entry = (float(-ctx_max), tok_strs, acts_list, argmax_idx)
+                    if len(heap) >= top_k and ctx_max <= heap[0][0]:
+                        continue   # can't make the top-k -- skip building the entry
+                    ctx_acts = feat_ctx[b]   # [T]
+                    entry = (ctx_max, row_strs[b], ctx_acts.tolist(), int(ctx_acts.argmax()))
                     if len(heap) < top_k:
                         heapq.heappush(heap, entry)
                     else:
-                        # Push and pop: keeps heap at size top_k, smallest neg_max (= highest max) wins
                         heapq.heappushpop(heap, entry)
 
     # ---- Write dashboards --------------------------------------------------
     out_dir = features_root / scan_name
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    n_features_total = int(fired_mask.sum())
+    print(f"[gen] writing dashboards for {n_features_total} fired features...", flush=True)
     n_written = 0
     for L in range(N):
         for f in range(d_t):
@@ -346,10 +359,15 @@ def generate_dashboards(
             if not heap:
                 continue
 
-            # Sort by descending max activation (ascending neg_max).
-            heap.sort()  # ascending neg_max = descending max_act
+            out_file = out_dir / f"{cantor_pair(L, f)}.json"
+            if out_file.exists():        # resumable: skip features already written
+                n_written += 1
+                continue
+
+            # Highest max-activation examples first.
+            heap.sort(reverse=True)
             examples = []
-            for neg_max, tok_strs, acts_list, argmax_idx in heap:
+            for _ctx_max, tok_strs, acts_list, argmax_idx in heap:
                 examples.append({
                     "tokens": tok_strs,
                     "acts": acts_list,
@@ -380,7 +398,6 @@ def generate_dashboards(
                 n_quantiles=n_quantiles,
             )
 
-            out_file = out_dir / f"{cantor_pair(L, f)}.json"
             out_file.write_text(json.dumps(m))
             n_written += 1
 
