@@ -24,10 +24,12 @@
 # the login node first — it WARNS (not fails) if no GPU is visible there.
 set -euo pipefail
 
+module load anaconda3
+conda activate lm4
 # ---- config (override via env vars) ----------------------------------------
 REMOTE_BASE="${REMOTE_BASE:-/jet/home/friedmae/data_storage/LM4_Results}"
 MODEL_DIR="${MODEL_DIR:-$REMOTE_BASE/runResults/bioS_N-Bd_final_grid/20260520-134455/grid/grid-L4-H6/final}"
-CLT_DIR="${CLT_DIR:-$REMOTE_BASE/clt_runs/grid-L4-H6/mult16_l02_lr0.0001_ep50_n10000/final}"
+CLT_DIR="${CLT_DIR:-$REMOTE_BASE/clt_runs/grid-L4-H6/sweep-cfbp6man/mult16_l02_lr0.0001_ep50_n10000/final}"
 DATA_DIR="${DATA_DIR:-$REMOTE_BASE/Data/bioS_N-Bd_final_grid}"
 SCAN_NAME="${SCAN_NAME:-grid-L4-H6}"
 FEATURES_ROOT="${FEATURES_ROOT:-$REMOTE_BASE/clt_features}"
