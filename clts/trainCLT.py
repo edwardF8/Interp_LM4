@@ -3,7 +3,7 @@
 Single run, default hooks:
     python clts/trainCLT.py --model-dir <path> --data-dir <path>
 
-Sweep over (expansion x l0 x lr):
+Sweep over (expansion x l0); lr/n_examples/epochs fixed in build_sweep_config:
     python clts/trainCLT.py --model-dir <path> --data-dir <path> --sweep
 
 Outputs land in:
@@ -293,16 +293,27 @@ def train_one_run(wandb_config_override: dict | None = None) -> None:
 # ============================================================================
 
 def build_sweep_config() -> dict:
+    # Broader stage-1 sweep (see docs/superpowers/specs/2026-05-31-broader-clt-sweep-design.md).
+    # The first sweep's optimum sat in the grid corner (max expansion, min l0,
+    # max lr) with poor mid-layer reconstruction (nmse_L1/L2 ~0.44/0.55 -> large
+    # attribution error nodes). This grid walks past that corner:
+    #   - expansion {4..64}: full capacity curve; capacity was under-used.
+    #   - l0 {1,2,5}: drop the always-worst 10, add 1 (balance reconstruction vs sparsity).
+    #   - lr fixed 1e-4: beat 3e-5 on all 6 pairings; 2e-4 is deferred to the final stage.
+    #   - n_examples 50k + epochs 10: 5x more unique data at the SAME step budget
+    #     as the old best run (total_steps = epochs * n_examples * 512 / 4096 = 62.5k).
+    # 5 x 3 = 15 runs. If expansion=64 OOMs, fall back to {4,8,16,32,48}.
     return {
         "program": "trainCLT.py",
         "method":  "grid",
         "name":    f"clt_sweep_{ARGS.model_name}",
         "metric":  {"name": "final_eval/ce_recovered", "goal": "maximize"},
         "parameters": {
-            "expansion":      {"values": [8, 16]},
-            "l0_coefficient": {"values": [2.0, 5.0, 10.0]},
-            "lr":             {"values": [3e-5, 1e-4]},
-            "epochs":         {"value":  50},
+            "expansion":      {"values": [4, 8, 16, 32, 64]},
+            "l0_coefficient": {"values": [1.0, 2.0, 5.0]},
+            "lr":             {"value":  1e-4},
+            "n_examples":     {"value":  50_000},
+            "epochs":         {"value":  10},
         },
         "early_terminate": {"type": "hyperband", "min_iter": 5, "eta": 3},
     }
@@ -362,7 +373,8 @@ def parse_args() -> argparse.Namespace:
     # ce_recovered headline number is sufficient for sweep selection.
 
     p.add_argument("--sweep", action="store_true",
-                   help="Launch wandb grid sweep over (expansion x l0 x lr).")
+                   help="Launch wandb grid sweep over (expansion x l0); "
+                        "lr/n_examples/epochs are fixed in build_sweep_config.")
 
     return p.parse_args()
 
