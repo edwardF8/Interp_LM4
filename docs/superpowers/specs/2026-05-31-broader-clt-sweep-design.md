@@ -66,16 +66,37 @@ is more `n_examples`, with epochs only as high as needed to converge.
 
 ```python
 "parameters": {
-    "expansion":      {"values": [4, 8, 16, 32, 64]},  # full capacity curve, below + above old range
-    "l0_coefficient": {"values": [1.0, 2.0, 5.0]},      # balance band; dropped always-worst 10, added 1
-    "lr":             {"value": 1e-4},                  # fixed — won all 6 pairings; 2e-4 deferred to final stage
-    "n_examples":     {"value": 50_000},                # 5× unique data vs old 10k
-    "epochs":         {"value": 10},                    # holds step budget == old best run (62.5k)
+    "expansion":      {"values": [4, 8, 16, 32]},  # capacity curve below + above old max of 16
+    "l0_coefficient": {"values": [1.0, 2.0, 5.0]},  # balance band; dropped always-worst 10, added 1
+    "lr":             {"value": 1e-4},              # fixed — won all 6 pairings; 2e-4 deferred to final stage
+    "n_examples":     {"value": 50_000},            # 5× unique data vs old 10k
+    "epochs":         {"value": 10},                # holds step budget == old best run (62.5k)
 },
 ```
 
-**5 × 3 = 15 runs.** Within the 16–24 budget; per-run cost ≈ old runs (same step
-count), so wall-clock ≈ the old 12-run sweep plus three runs.
+**4 × 3 = 12 runs.**
+
+### Wall-clock budget
+
+`wandb agent` on one GPU runs trials sequentially. Fitting the old runtimes
+(exp8 ≈ 3,960s, exp16 ≈ 6,810s) gives `runtime ≈ 1110 + 356·expansion`, which
+reproduces the old 12-run sweep at **17.95h** vs. its actual **18h** — so the
+model is trusted.
+
+| expansion | per run | × 3 l0 |
+|---|---|---|
+| 4  | ~42 min | ~2.1 h |
+| 8  | ~66 min | ~3.3 h |
+| 16 | ~1.9 h  | ~5.7 h |
+| 32 | ~3.5 h  | ~10.5 h |
+| **total** | | **~21.5 h** |
+
+Fits one `submit_job_psc.sh` job (`--time=24:00:00`), next to the old 18h.
+
+**`expansion=64` is deliberately excluded from the grid:** at ~6.6h/run × 3 it
+would add ~19.5h and push the sweep to ~41h, well past the 24h cap. It moves to
+the final stage — if `ce_recovered` is still climbing at expansion=32, test 64 as
+a single targeted run on the winning l0.
 
 Keep `method=grid`, `metric=final_eval/ce_recovered (maximize)`, and the existing
 hyperband early-terminate.
@@ -89,7 +110,9 @@ hyperband early-terminate.
 
 ## Contingency
 
-If `expansion=64` OOMs, fall back to `{4,8,16,32,48}`.
+If `expansion=32` OOMs, fall back to `{4,8,16,24}`. If the sweep is faster than
+expected and time allows, `64` can be appended back into the grid (~+19.5h →
+~41h, requires a >24h walltime or parallel agents).
 
 ## Out of scope
 

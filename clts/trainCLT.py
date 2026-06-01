@@ -297,19 +297,22 @@ def build_sweep_config() -> dict:
     # The first sweep's optimum sat in the grid corner (max expansion, min l0,
     # max lr) with poor mid-layer reconstruction (nmse_L1/L2 ~0.44/0.55 -> large
     # attribution error nodes). This grid walks past that corner:
-    #   - expansion {4..64}: full capacity curve; capacity was under-used.
+    #   - expansion {4..32}: capacity curve below + above the old max of 16.
+    #     expansion=64 is deferred to the final stage: at ~6.6h/run x3 it would
+    #     push the sequential sweep to ~41h, past submit_job_psc.sh's 24h cap.
+    #     (The old 12-run sweep ran ~18h sequential; this 12-run grid is ~21.5h.)
     #   - l0 {1,2,5}: drop the always-worst 10, add 1 (balance reconstruction vs sparsity).
     #   - lr fixed 1e-4: beat 3e-5 on all 6 pairings; 2e-4 is deferred to the final stage.
     #   - n_examples 50k + epochs 10: 5x more unique data at the SAME step budget
     #     as the old best run (total_steps = epochs * n_examples * 512 / 4096 = 62.5k).
-    # 5 x 3 = 15 runs. If expansion=64 OOMs, fall back to {4,8,16,32,48}.
+    # 4 x 3 = 12 runs.
     return {
         "program": "trainCLT.py",
         "method":  "grid",
         "name":    f"clt_sweep_{ARGS.model_name}",
         "metric":  {"name": "final_eval/ce_recovered", "goal": "maximize"},
         "parameters": {
-            "expansion":      {"values": [4, 8, 16, 32, 64]},
+            "expansion":      {"values": [4, 8, 16, 32]},
             "l0_coefficient": {"values": [1.0, 2.0, 5.0]},
             "lr":             {"value":  1e-4},
             "n_examples":     {"value":  50_000},
