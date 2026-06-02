@@ -37,7 +37,7 @@ All four inputs come through the shared seam that `clts/` and `saes/` already us
 **Settled (from brainstorming):**
 - **Hook = `blocks.{L}.hook_resid_post`** (paper-faithful: the paper decomposes the residual stream out of a block; also the more standard modern SAE substrate). CLI-configurable via a hook template containing `{layer}`. Default `L=2` (mid of 4; note `L=3 ≈` the paper's 8/12 relative depth).
 - **Windowing = within-bio only.** No `τ+1` window may cross an EOS/bio boundary. Implemented via one-bio-per-row corpus (§6).
-- **`τ = 5`** (default). Forced deviation from the paper's main `τ=20`: birthday-only bios are ~12–20 tokens, so a width-21 within-bio window yields ≈0 windows. `τ=5` is itself a config the paper ran. Configurable, with a bio-length-histogram guardrail (§11).
+- **`τ` auto-derived to span the largest bio** (default `--tau auto` → `τ = max(valid_len) − 1` over the train corpus; optional `--tau-cap` to bound it). This lets time-delayed relations reach across a whole bio (first→last token) — the within-bio analog of the paper's full temporal window — superseding the earlier fixed `τ=5`. The zero-window trap is avoided by **zero-left-padding** (§5/§6): every token position is a "current" token and lookback before the bio start is zero-filled (contributing nothing), so every bio yields windows. High lags are supervised only by the longest bios; L1 sparsity prunes under-supported ones. *(Literal `τ = L_max` would add one lag no in-bio pair can fill; we use `L_max − 1`. Memory scales with `τ·z_dim²` — see §5.)*
 - **Paper-over-reference-code resolutions:**
   1. **`M` strictly lower-triangular:** `get_M() = tril(M, diagonal=-1)` (zero diagonal — DAG / no self-instantaneous-cause; paper §3, §4.3). *Reference code uses `diagonal=1`, which keeps the diagonal + a super-diagonal — inconsistent with the paper and with the repo's own synthetic code; treated as a bug.*
   2. **No L1 on latents by default:** paper loss is `L_s = Σ_τ‖B_τ‖₁ + ‖M‖₁` only (Eq. 8); latent sparsity is TopK's job (App. A.5.1). *Reference adds an undocumented `l_spZ` term.* Exposed as `--l-spZ` (default `0.0`).
@@ -75,7 +75,7 @@ Reused verbatim (imported, not copied): `clts.tl_model.build_hooked_transformer`
 
 ## 5. Model — `SAE_CRL(nn.Module)` (`sae_crl.py`)
 
-Linear, untied encoder/decoder, **no bias** (ablation A.5.3 shows bias doesn't help). Let `x_dim` = activation width (= `d_model` = 384 at `resid_post`), `z_dim` = latent dim (default 3072), `tau` = number of lags (default 5).
+Linear, untied encoder/decoder, **no bias** (ablation A.5.3 shows bias doesn't help). Let `x_dim` = activation width (= `d_model` = 384 at `resid_post`), `z_dim` = latent dim (default 3072), `tau` = number of lags (auto-derived to span the largest bio — §3).
 
 **Parameters**
 | Param | Shape | Init |
@@ -85,14 +85,14 @@ Linear, untied encoder/decoder, **no bias** (ablation A.5.3 shows bias doesn't h
 | `M` | `[z_dim, z_dim]` | `xavier_normal_` |
 | `Bs` | `ParameterList(tau × [z_dim, z_dim])` | **zeros** |
 
-(Memory note: `M` and each `B_τ` are `z_dim²`. At `z_dim=3072`, that's ~9.4M params each → ~56M params total for `τ=5` (~226 MB fp32). Feasible on one GPU; `z_dim` is the main lever if memory is tight.)
+(Memory note: `M` and each `B_τ` are `z_dim²`. At `z_dim=3072` that's ~9.4M params each. With `τ` auto-spanning the largest bio (~25–30 tokens for birthday bios), `B` is ~25–30 such matrices → ~250M params (~1 GB fp32), roughly ×3 with Adam states. Fine on an A100/L40; on a memory-constrained Mac/MPS, lower `z_dim` (e.g. 1024–1536) or set `--tau-cap`. `z_dim` and `τ` are the two memory levers.)
 
 **Methods**
 - `encode(x) -> z`: `z = x @ F_enc`; if `topk_mode=="latent"` and `topk>0`, apply per-row TopK-by-`|z|` (mask all but top-k). `[*, x_dim] → [*, z_dim]`.
 - `decode(z) -> x_hat`: `z @ F_dec`. `[*, z_dim] → [*, x_dim]`.
 - `get_M() -> tril(M, diagonal=-1)` (strictly lower-triangular, zero diagonal).
 - `predict_latent(Z) -> Ẑ_t`: from a window's encoded latents `Z [batch, tau+1, z_dim]`, `z_t = Z[:, -1]`; `Ẑ_t = z_t @ get_M().T + Σ_{lag=1..tau} Z[:, tau-lag] @ Bs[lag-1].T`. If `topk_mode=="prediction"` and `topk>0`, apply TopK to `Ẑ_t`.
-- `forward(window) -> dict`: `window [batch, tau+1, x_dim]`. `Z = encode(window)`; `x_hat_t = decode(Z[:, -1])`; `Ẑ_t = predict_latent(Z)`; `ε̂ = Z[:, -1] − Ẑ_t`. Returns the tensors needed by `compute_loss`.
+- `forward(window) -> dict`: `window [batch, tau+1, x_dim]`. `Z = encode(window)`; `x_hat_t = decode(Z[:, -1])`; `Ẑ_t = predict_latent(Z)`; `ε̂ = Z[:, -1] − Ẑ_t`. Returns the tensors needed by `compute_loss`. Lookback steps that fall before the bio start are **zero-filled** in `window`; with no encoder bias, `encode(0)=0`, so those lags contribute exactly nothing to `Ẑ_t` — no explicit masking needed.
 - `compute_loss(window, alpha, beta, l_spZ=0.0, noise_mode="lap") -> dict`:
   - `recon = mse(x_hat_t, window[:, -1])`
   - `indep = mean(|ε̂|)` if `noise_mode=="lap"` (Laplacian → L1); `trace(cov(ε̂))` if `"gau"`
@@ -118,29 +118,29 @@ The crux of "respect bio boundaries." One-bio-per-row sidesteps EOS-splitting an
   - Each bio is its **own row**, right-padded with EOS to `max_bio_len` (default 48). Bios longer than `max_bio_len` are truncated.
   - Returns `tokens [n_bios, max_bio_len]` (long) and `valid_len [n_bios]` (real token count per row, excluding right-padding).
 - `capture_resid_post(model, tokens_chunk, hook_name) -> acts [chunk_rows, max_bio_len, x_dim]`: `run_with_cache(names_filter=lambda n: n==hook_name, return_type=None)` on a **chunk** of bio rows, kept **per-sequence** (not flattened).
-- `window_index(valid_len_chunk, tau) -> list[(local_row, start)]`: for each row, `start ∈ [0, valid_len[r] − (tau+1)]` (stride 1). Rows with `valid_len < tau+1` contribute nothing. **No window straddles a bio.** Windows are gathered as `acts[local_row, start:start+tau+1, :] → [n_windows, tau+1, x_dim]`.
-- **Activation streaming (not precompute-all):** training stores only the **token** corpus (`n_bios × max_bio_len` ids — tiny) and re-runs the frozen model **per chunk** to get activations on demand, matching `trainCLT.py`. This lets `n_bios` scale to a real token budget without holding `n_bios × max_bio_len × x_dim` floats in memory. The **held-out eval** corpus is small, so its activations + window index are captured **once** in `setup()`.
+- `build_windows(acts_chunk, valid_len_chunk, tau) -> [n_windows, tau+1, x_dim]`: **every** real token position `t` in each bio is a "current" token; its window is `acts[row, t−tau : t+1]`, **zero-left-padded** for any index before that bio's start. A bio of length `L` thus yields `L` windows (not `max(0, L−tau)`), and short bios are never excluded. **No window draws activations from another bio** — out-of-bio positions are zeros, not a neighbor's tokens.
+- **Activation streaming (not precompute-all):** training stores only the **token** corpus (`n_bios × max_bio_len` ids — tiny) and re-runs the frozen model **per chunk** to get activations on demand, matching `trainCLT.py`. This lets `n_bios` scale to a real token budget without holding `n_bios × max_bio_len × x_dim` floats in memory. The **held-out eval** corpus is small, so its activations + `valid_len` are captured **once** in `setup()` (its windows are built later, with the derived `τ`).
 - Train corpus uses `seed=0`; held-out eval corpus uses `seed=1` (the repo's train/eval split convention).
 
 ---
 
 ## 7. Training driver — `trainSAE_CRL.py` (clone of `clts/trainCLT.py`)
 
-- **Module globals** `ARGS, device, model, tokenizer, sampler, eval_acts, eval_index`, populated once by `setup(args)` (reused across wandb sweep trials).
-- `setup(args)`: `storage_root()` write-probe (fail fast); `build_hooked_transformer`; `CondensedTokenizer.from_remap_path`; `BioSampler`; build held-out eval corpus + activations + window index (`seed=1`).
+- **Module globals** `ARGS, device, model, tokenizer, sampler, eval_acts, eval_valid_len`, populated once by `setup(args)` (reused across wandb sweep trials).
+- `setup(args)`: `storage_root()` write-probe (fail fast); `build_hooked_transformer`; `CondensedTokenizer.from_remap_path`; `BioSampler`; capture held-out eval **activations + `valid_len`** (`seed=1`). (Eval windows are built later, once `τ` is derived from the train corpus.)
 - `pick_device()`: cuda → mps → cpu.
 - `train_one_run(wandb_config_override=None)`:
   - Read hyperparams from `wandb.config` with `ARGS` fallbacks.
-  - Build train **token** corpus (`seed=0`); print bio-length histogram + total bios/windows/tokens; **warn if `τ+1` > median `valid_len`**, **error if total windows == 0** (guardrails).
-  - Construct `SAE_CRL`; `Adam(lr, weight_decay=wd)`.
+  - Build train **token** corpus (`seed=0`); print bio-length histogram + total bios/windows/activation-tokens. **Derive `τ`**: `--tau auto` → `max(valid_len) − 1` (bounded by `--tau-cap` if set), else the given int.
+  - Construct `SAE_CRL` with the derived `τ` (so `B` is sized to the data); `Adam(lr, weight_decay=wd)`.
   - Loop over epochs; each epoch shuffle bio order and iterate in **chunks of `chunk_rows` bios**: `capture_resid_post(chunk)` → build within-bio windows → step the optimizer over those windows in sub-batches of `window_batch` (`compute_loss` → `backward` → `step`). Re-running the frozen model per chunk keeps memory flat and scales with `n_bios`. **Sparsity warmup**: linearly ramp `beta`/`alpha` over the first ~10% of steps (mirrors CLT's L0 warmup).
   - `wandb.log` train losses every N steps; held-out eval every M steps.
   - Final: full eval + `save_to_dir(final_dir, model_name)` + `wandb.log({final_eval/*, storage_path})`.
-- `build_sweep_config()`: wandb grid (`project="interpLM4"`), candidate axes `z_dim × tau × topk × beta`; metric `final_eval/ce_recovered` (maximize); hyperband early-terminate.
+- `build_sweep_config()`: wandb grid (`project="interpLM4"`), candidate axes `z_dim × topk × beta × alpha` (`τ` is data-derived, not swept); metric `final_eval/ce_recovered` (maximize); hyperband early-terminate.
 - `_patch_signal_for_worker_threads()`: the SIGINT-off-main-thread shim (needed for `wandb.agent`).
 - `parse_args()` + `DEFAULTS` dict; `main()` branches on `--sweep`.
 
-**CLI:** `--model-dir`, `--data-dir`, `--model-name`, `--hook-template "blocks.{layer}.hook_resid_post"`, `--layer`, `--z-dim`, `--tau`, `--topk`, `--topk-mode {latent,prediction}`, `--noise-mode {lap,gau}`, `--alpha`, `--beta`, `--l-spZ`, `--lr`, `--wd`, `--epochs`, `--n-bios`, `--max-bio-len`, `--chunk-rows`, `--window-batch`, `--eps`, `--sweep`.
+**CLI:** `--model-dir`, `--data-dir`, `--model-name`, `--hook-template "blocks.{layer}.hook_resid_post"`, `--layer`, `--z-dim`, `--tau`, `--tau-cap`, `--topk`, `--topk-mode {latent,prediction}`, `--noise-mode {lap,gau}`, `--alpha`, `--beta`, `--l-spZ`, `--lr`, `--wd`, `--epochs`, `--n-bios`, `--max-bio-len`, `--chunk-rows`, `--window-batch`, `--eps`, `--sweep`.
 
 **Artifacts:** `storage_root()/sae_CRL_runs/<model-name>/{sweep-<id>|standalone}/<trial>/final/` with `<trial> = z{z_dim}_tau{tau}_k{topk}_a{alpha}_b{beta}_lr{lr}_ep{epochs}_n{n_bios}`.
 
@@ -148,7 +148,7 @@ The crux of "respect bio boundaries." One-bio-per-row sidesteps EOS-splitting an
 
 ## 8. Eval — `evalSAE_CRL.py`
 
-`@torch.no_grad`, given `(model, sae_crl, eval_acts, eval_index, hook_name)`:
+`@torch.no_grad`, given `(model, sae_crl, eval_acts, eval_valid_len, hook_name)` (eval windows are built with `sae_crl`'s derived `τ`):
 - **Reconstruction:** MSE, NMSE, explained variance of `decode(encode(x))` vs `x` on held-out windows (current-step).
 - **Latent sparsity:** L0 (mean active latents/token; `= k` when `topk_mode=="latent"`), dead-feature fraction.
 - **CE-recovered:** splice `decode(encode(acts))` into the model at `hook_name` via `run_with_hooks`; `ce_recovered = (ce_zero − ce_method)/(ce_zero − ce_clean)`. Same metric/shape as the SAE/CLT eval (directly comparable). Measures the SAE/reconstruction half; the `B_τ`/`M` structure is reported separately.
@@ -170,7 +170,8 @@ Mirror `clts/storage.py` (dependency-light). `storage_root()` resolution: (1) `$
 | hook | `blocks.{L}.hook_resid_post`, `L=2` | paper-faithful site |
 | `eps` | `1e-5` | TL default / repo convention |
 | `z_dim` | 3072 | reference's z=3072 config (~8× of 384) |
-| `tau` | 5 | within-bio; paper also ran 5 |
+| `tau` | `auto` (= max bio length − 1) | spans the largest bio (first→last token) |
+| `tau_cap` | none | optional upper bound on auto `τ` (memory) |
 | `max_bio_len` | 48 | per-row pad length |
 | `topk` / `topk_mode` | 100 / `latent` | paper App. A.5.1 (TopK on latents) |
 | `noise_mode` | `lap` | Eq. 7 / footnote |
@@ -187,7 +188,7 @@ Mirror `clts/storage.py` (dependency-light). `storage_root()` resolution: (1) `$
 ## 11. Error handling & guardrails
 
 - `setup()` write-probes `storage_root()` and aborts early if unwritable.
-- `build_bio_corpus` prints a **bio-length histogram** and total bios / windows / activation-tokens; `train_one_run` **warns** if `τ+1` exceeds the median `valid_len` (the τ-vs-short-bio trap), and **errors** if the total window count is 0.
+- `build_bio_corpus` prints a **bio-length histogram** and total bios / windows / activation-tokens; `train_one_run` prints the **derived `τ`** and **warns** that lags beyond the median bio length are supervised only by the longest bios (sparse high-lag gradients). With zero-left-padding every non-empty bio yields ≥1 window, so a zero-window corpus can only mean an empty/failed build.
 - `--hook-template` must contain `{layer}`.
 - `CondensedTokenizer.encode` raises on out-of-vocab tokens; corpus build surfaces that clearly.
 - Device-agnostic (`pick_device`); fp32 end-to-end.
