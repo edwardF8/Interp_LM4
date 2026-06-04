@@ -36,11 +36,11 @@ ENC_HOOK="blocks.{layer}.hook_resid_mid"   # encoder input
 DEC_HOOK="blocks.{layer}.hook_mlp_out"     # decoder target
 
 # --- mode: pick ONE of the two sections below -------------------------------
-SWEEP=0             # 0 = single run (SECTION A) ; 1 = wandb grid sweep (SECTION B)
+SWEEP=1       # 0 = single run (SECTION A) ; 1 = wandb grid sweep (SECTION B)
 CONTEXT_SIZE=512    # (applies to both)
 
 # === SECTION A: single-run hyperparameters (used when SWEEP=0) ===============
-N_EXAMPLES=1000     # 1000 = quick test; 10000 = full
+N_EXAMPLES=10000     # 1000 = quick test; 10000 = full
 EPOCHS=20           # 3 = quick test; 30 = full
 EXPANSION=16        # d_transcoder = EXPANSION * d_model
 L0=5.0              # sparsity (L0) coefficient
