@@ -85,12 +85,14 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--out-dir", default=None)
+    ap.add_argument("--scan-name", default=SCAN_NAME,
+                    help="namespaces the default out-dir (match the worker)")
     ap.add_argument("--top-k", type=int, default=10)
     args = ap.parse_args()
 
     from clts.storage import storage_root
     out_dir = Path(args.out_dir) if args.out_dir else \
-        storage_root() / "clt_feature_explorer" / SCAN_NAME / "hpc"
+        storage_root() / "clt_feature_explorer" / args.scan_name / "hpc"
     partials_dir = out_dir / "partials"
     reports_dir = out_dir / "reports"
     reports_dir.mkdir(parents=True, exist_ok=True)
@@ -117,7 +119,7 @@ def main():
         s = sum_aggs(aggs)
         config = {"target_feature": [layer, fidx], "target": "month", "month": month,
                   "templates": templates, "rank_by_abs": rank_by_abs,
-                  "include_token_nodes": incl_tok, "scan": SCAN_NAME,
+                  "include_token_nodes": incl_tok, "scan": args.scan_name,
                   "n_shards_merged": len(parts), "every_person": True}
         report = format_report(s, top_k=args.top_k, config=config)
         stem = f"report_L{layer}F{fidx}_{month.lower()}-all"

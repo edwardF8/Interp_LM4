@@ -2,7 +2,7 @@
 # Submit and monitor per-layer SAE-CRL sweeps on PSC (one parallel job per layer).
 #
 # Run from the repo root (~/Interp_LM4) on a Bridges-2 login node (after `wandb login`):
-#
+# 
 #   ./scripts/sweeps_crl.sh submit    # queue one job per layer in $LAYERS
 #   ./scripts/sweeps_crl.sh status    # one-shot status snapshot
 #   ./scripts/sweeps_crl.sh watch     # status, refreshing every 60s, until all jobs end

@@ -35,10 +35,12 @@ import torch  # noqa: E402
 
 import clts.writefeatures as wf  # noqa: E402
 
-MODEL_DIR = REPO / "model/grid-L4-H6"
-CLT_DIR   = REPO / "clts/clt_runs/grid-L4-H6/mult16_l02_lr0.0001_ep50_n10000/final"
-DATA_DIR  = REPO / "data/bioS_N-Bd_final_grid"
-SCAN_NAME = "grid-L4-H6"
+# Local (Mac) defaults; on PSC pass --model-dir/--clt-dir/--data-dir/--scan-name
+# (the writefeatures_psc.sbatch script supplies the $REMOTE_BASE paths).
+DEFAULT_MODEL_DIR = REPO / "model/grid-L4-H6"
+DEFAULT_CLT_DIR   = REPO / "clts/clt_runs/grid-L4-H6/mult16_l02_lr0.0001_ep50_n10000/final"
+DEFAULT_DATA_DIR  = REPO / "data/bioS_N-Bd_final_grid"
+DEFAULT_SCAN_NAME = "grid-L4-H6"
 
 MONTH_STRINGS = [
     "January", "February", "March", "April", "May", "June",
@@ -123,6 +125,10 @@ def finalize_agg(agg):
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--model-dir", default=str(DEFAULT_MODEL_DIR))
+    ap.add_argument("--clt-dir", default=str(DEFAULT_CLT_DIR))
+    ap.add_argument("--data-dir", default=str(DEFAULT_DATA_DIR))
+    ap.add_argument("--scan-name", default=DEFAULT_SCAN_NAME)
     ap.add_argument("--months", default="all", help="comma list, or 'all'")
     ap.add_argument("--num-shards", type=int, default=1)
     ap.add_argument("--shard-index", type=int, default=0)
@@ -142,6 +148,9 @@ def main():
     ap.add_argument("--no-skip-existing", dest="skip_existing", action="store_false")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
+
+    MODEL_DIR, CLT_DIR = Path(args.model_dir), Path(args.clt_dir)
+    DATA_DIR, SCAN_NAME = Path(args.data_dir), args.scan_name
 
     from clts.storage import storage_root
     out_dir = Path(args.out_dir) if args.out_dir else \
