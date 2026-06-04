@@ -22,13 +22,13 @@ DATASET="${DATASET:-bioS_N-Bd_final_grid}"  # MUST be the dataset $MODEL_NAME wa
 LAYERS="${LAYERS:-0 1}"                     # space list; 0-indexed resid_post hooks (blocks.<n>)
 
 # --- sweep grid: the "different CRL interps" (comma lists; one job per layer runs this whole grid) ---
-BETAS="${BETAS:-0.001,0.01,0.1}"            # l_spB = l_spM  (graph sparsity; small -> denser M/B_tau)
+BETAS="${BETAS:-0.001,0.01}" #,0.1}"            # l_spB = l_spM  (graph sparsity; small -> denser M/B_tau)
 TOPKS="${TOPKS:-25,100}"                    # latent L0 (active concepts per token)
 
 # --- fixed (non-swept) training knobs ---
 Z_DIM="${Z_DIM:-3072}"                      # dictionary size (8x d_model=384)
-EPOCHS="${EPOCHS:-10}"
-N_BIOS="${N_BIOS:-50000}"
+EPOCHS="${EPOCHS:-15}"
+N_BIOS="${N_BIOS:-10000}"
 LR="${LR:-0.01}"
 NOISE_MODE="${NOISE_MODE:-lap}"             # lap | gau
 
