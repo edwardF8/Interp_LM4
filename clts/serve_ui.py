@@ -24,6 +24,16 @@ def start_server(graph_dir: str, features_dir: str | None = None,
 
     from circuit_tracer.frontend.local_server import serve
 
+    # Keep the viewer's subgraph layout stable (dagrefy default off). Idempotent
+    # and re-applies after a circuit-tracer reinstall.
+    try:
+        from clts.patch_frontend import apply_frontend_patches
+    except ImportError:
+        import sys
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+        from clts.patch_frontend import apply_frontend_patches
+    apply_frontend_patches()
+
     graph_dir = Path(graph_dir)
 
     if features_dir is not None and scan_name is not None:

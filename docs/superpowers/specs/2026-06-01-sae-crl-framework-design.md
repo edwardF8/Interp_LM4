@@ -1,220 +1,130 @@
-# SAE-CRL: Causal-Representation-Learning SAE for Interp_LM4
+# SAE-CRL: Causal-Representation-Learning SAE for Interp_LM4 (faithful port)
 
-- **Date:** 2026-06-01
-- **Status:** Design approved; pending spec review (one open item flagged in §3)
-- **Author:** (brainstormed with Claude Code)
-- **Scope this round:** Core only — trainable model + data/windowing pipeline + training driver + eval metrics + checkpoint save/load. Relation analysis/dashboards, synthetic identifiability validation, SAEBench comparison, and circuit-tracer attribution wiring are **out of scope** (see §13).
+- **Created:** 2026-06-01 · **Revised:** 2026-06-03 (rewritten from the from-paper draft to a faithful **port** of the reference code)
+- **Status:** Design approved. Implementation plan: `docs/superpowers/plans/2026-06-01-sae-CRL-framework.md`.
+- **Scope this round:** Core only — trainable model + windowing + training driver + eval metrics + checkpoint save/load. Relation analysis/dashboards, synthetic identifiability validation, SAEBench comparison, and attribution wiring are **out of scope** (§9).
 
 ---
 
 ## 1. Goal
 
-Implement the linear *temporal–instantaneous* SAE from Song et al., "LLM Interpretability with Identifiable Temporal-Instantaneous Representation" (NeurIPS 2025; arXiv:2509.23323v2) as a new interpretability method inside `Interp_LM4`, trained on this repo's own small Llama checkpoints, condensed tokenizer, and bioS dataset.
+Port the temporal–instantaneous SAE method from Song et al., "LLM Interpretability with Identifiable Temporal-Instantaneous Representation" (NeurIPS 2025; arXiv:2509.23323v2) into `Interp_LM4`, trained on this repo's small Llama checkpoints, condensed tokenizer, and bioS data. Produce trained time-delayed matrices `B_τ` and an instantaneous matrix `M` over learned concept latents.
 
-**Faithfulness rule:** follow the **paper's equations**. Where the reference implementation (`github.com/xiangchensong/temp-inst-sae`) *code* contradicts its own paper, follow the paper (each such case is documented in §3). The reference behavior is preserved behind config flags where cheap.
+**Faithfulness rule (decided):** this is a **port of the authors' released code**, not a from-scratch reimplementation. Default every behavior to the reference code; deviate only where (a) the user explicitly chose the paper over the code, or (b) our setup forces it. **Every deviation is enumerated in §3 and must stay documented in the code + plan.**
 
-**The method in one paragraph.** A *linear* autoencoder produces latents `z = encode(x)` and reconstructs `x̂ = decode(z)`. The latents carry a learned causal structure: time-delayed matrices `B_τ` (`z_{t−τ} → z_t`) and a strictly-lower-triangular instantaneous matrix `M` (`z_t → z_t`, an acyclic DAG within a token). Training minimizes (1) reconstruction MSE, (2) an **independent-noise** term — L1 on the SEM residual `ε̂ = z_t − M z_t − Σ_τ B_τ z_{t−τ}` (Laplacian prior), and (3) **sparsity** — L1 on `B_τ` and `M`; latent sparsity is enforced by TopK. The trained `B_τ` (max-pooled to `aggB`) and `M` are the discovered concept-to-concept relations.
+**Reference (source of truth):** cloned locally at `reference/temp-inst-sae/` (gitignored). The ported model is `examples/linear_idol_model.py` (`LinearIDOL`); training/defaults are `examples/main.py`; their window builder is `examples/utils.py`.
+
+**Method in one paragraph.** A bias-free, untied **linear** autoencoder encodes activations into latents and reconstructs them. The latents carry a causal SEM: an instantaneous matrix `M` (within a token) and per-lag time-delayed matrices `B_1..B_τ` (from earlier tokens). Training minimizes the reference's six losses: reconstruction MSE (on the current token), the SEM residual independence penalty `ε̂ = z_t − (M z_t + Σ_τ B_τ z_{t−τ})`, and L1 sparsity on `B`/`M`, with **TopK** enforcing latent sparsity.
 
 ---
 
 ## 2. Inputs — the integration seam (reused, not reinvented)
 
-All four inputs come through the shared seam that `clts/` and `saes/` already use:
-
 | Input | Source | Notes |
 |---|---|---|
-| Base model | `clts.tl_model.build_hooked_transformer(model_dir, device)` | HF Llama → TransformerLens `HookedTransformer`. Default `model/grid-L4-H6` (4 layers, `d_model=384`, vocab 1836, `n_ctx=512`). |
-| Tokenizer | `util.condensed_tokenizer.CondensedTokenizer.from_remap_path(data_dir/"old_to_new.json")` | Reduced GPT-2 vocab, size 1836, `eos=bos=pad=1835`. |
-| Data | `util.bio_sampler.BioSampler(data_dir/"people.json", fields=("birthday",))` | Renders byte-identical bios via the sibling `Training_On_LM4` package. `people.json` confirmed present in `data/bioS_N-Bd_final_grid/`. |
-| Activations | `model.run_with_cache(tokens, names_filter=...)` at `blocks.{L}.hook_resid_post` | Default layer `L=2`. |
-
-**RMS-norm eps:** leave at the TransformerLens default `1e-5` (the repo convention `build_hooked_transformer` already uses; consistent with existing SAE/CLT runs). Expose `--eps` to override to `1e-6` (the checkpoint's exact `rms_norm_eps`). Document, don't change silently.
+| Base model | `clts.tl_model.build_hooked_transformer(model_dir, device)` | HF Llama → TransformerLens `HookedTransformer`. Default `model/grid-L4-H6` (4 layers, `d_model=384`, vocab 1836). |
+| Tokenizer | `util.condensed_tokenizer.CondensedTokenizer.from_remap_path(data_dir/"old_to_new.json")` | reduced GPT-2 vocab, size 1836, `eos=bos=pad=1835`. |
+| Data | `util.bio_sampler.BioSampler(data_dir/"people.json", fields=("birthday",))` | renders byte-identical bioS bios; `sampler.sample(rng)["text"]`. |
+| Activations | `model.run_with_cache(tokens, names_filter=lambda n: n==hook)` at `blocks.{L}.hook_resid_post` | default layer `L=2`. RMS-norm `eps=1e-5` (TL default); `--eps 1e-6` to match the checkpoint exactly. |
 
 ---
 
-## 3. Decisions
+## 3. Deviations ledger (authoritative)
 
-**Settled (from brainstorming):**
-- **Hook = `blocks.{L}.hook_resid_post`** (paper-faithful: the paper decomposes the residual stream out of a block; also the more standard modern SAE substrate). CLI-configurable via a hook template containing `{layer}`. Default `L=2` (mid of 4; note `L=3 ≈` the paper's 8/12 relative depth).
-- **Windowing = within-bio only.** No `τ+1` window may cross an EOS/bio boundary. Implemented via one-bio-per-row corpus (§6).
-- **`τ` auto-derived to span the largest bio** (default `--tau auto` → `τ = max(valid_len) − 1` over the train corpus; optional `--tau-cap` to bound it). This lets time-delayed relations reach across a whole bio (first→last token) — the within-bio analog of the paper's full temporal window — superseding the earlier fixed `τ=5`. The zero-window trap is avoided by **zero-left-padding** (§5/§6): every token position is a "current" token and lookback before the bio start is zero-filled (contributing nothing), so every bio yields windows. High lags are supervised only by the longest bios; L1 sparsity prunes under-supported ones. *(Literal `τ = L_max` would add one lag no in-bio pair can fill; we use `L_max − 1`. Memory scales with `τ·z_dim²` — see §5.)*
-- **Paper-over-reference-code resolutions:**
-  1. **`M` strictly lower-triangular:** `get_M() = tril(M, diagonal=-1)` (zero diagonal — DAG / no self-instantaneous-cause; paper §3, §4.3). *Reference code uses `diagonal=1`, which keeps the diagonal + a super-diagonal — inconsistent with the paper and with the repo's own synthetic code; treated as a bug.*
-  2. **No L1 on latents by default:** paper loss is `L_s = Σ_τ‖B_τ‖₁ + ‖M‖₁` only (Eq. 8); latent sparsity is TopK's job (App. A.5.1). *Reference adds an undocumented `l_spZ` term.* Exposed as `--l-spZ` (default `0.0`).
-  3. **Drop `w` and `mse_Zt`:** neither is in the paper; both are off-by-default in the reference anyway.
+**Matches the reference code exactly:** bias-free untied `F_enc`/`F_dec`; `Bs` zero-init, `F_enc`/`F_dec`/`M` xavier; `forward` returns the 6-tuple `(mse_Xt, mse_Zt, indep, sparse_Bs, sparse_M, sparse_Zt)`; **reconstruction MSE on the last window position only**; `Zt = M·z_t + Σ_lag B_lag·z_{t−lag}`; `ε̂ = z_t − Zt`; `lap = mean|ε̂|`, `gau = trace(cov(ε̂))`; loss `= mse_Xt + l_mse_Zt·mse_Zt + l_ind·indep + l_spB·sparse_Bs + l_spM·sparse_M + l_spZ·sparse_Zt` (`main.py:113`); defaults `lr=0.01, wd=1e-4, z_dim=3072, l_ind=0.1, topk=100`, `w`/`mse_Zt` off; **feature-first** window layout `[batch, x_dim, τ+1]`, last index = current token.
 
-**OPEN — confirm during spec review — TopK placement.** There is a genuine paper-vs-reference-code discrepancy:
-- **Paper reading (recommended default):** App. A.5.1 says TopK enforces "sparsity in the hidden feature activations," and Fig. 2 shows the encoder producing `ẑ_t`. So apply **TopK to the encoder output `z = encode(x)`** — making this a proper sparse TopK-SAE whose sparse code is used by *both* the decoder and the SEM. Keep TopK active at **train and eval** (so latents are genuinely sparse, `L0 = k`, and recon/CE-recovered/SAEBench-style metrics are meaningful and comparable to the existing SAEs).
-- **Reference-code reading:** applies TopK to the *structural prediction* `Ẑ_t = M z_t + Σ_τ B_τ z_{t−τ}` (leaving `z` dense) and disables TopK at eval — i.e., a dense linear AE plus a sparsified causal prediction.
-- **Plan:** default to the paper reading (`--topk-mode latent`); provide `--topk-mode prediction` for exact reference replication. **This is the one new interpretive call not previously surfaced; flagged here for explicit confirmation.**
+**Deliberate deviations toward the PAPER (user's call):**
+| # | We do (paper) | Their code does | Why |
+|---|---|---|---|
+| P1 | `M = tril(M, −1)` (strictly lower, zero diagonal) | `tril(M, +1)` | Paper §3/§4.3: the instantaneous graph is an acyclic DAG (no self-loops). |
+| P2 | **TopK on the encoded latents** `Zp` (all timesteps), **kept on at eval** | TopK on the predicted `Zt`, disabled at eval | Paper App. A.5.1 ("sparsity in the hidden feature activations") + cited method [8]=BatchTopK (TopK on encoder outputs). Makes it a genuine sparse SAE so recon/L0/CE-recovered are meaningful. |
+| P3 | **`l_spZ = 0`** (no L1 on latents/`Zt`) | `l_spZ = 0.1` | Paper Eq. 8 penalizes only `B_τ` and `M`; latent sparsity is left to TopK (P2). Configurable: `--l-spZ 0.1` restores the code's term. |
+| P4 | **`l_spB = l_spM = 0.01`** (paper's tuned β) | `0.1` | Paper Eq. 9 + sensitivity study (Table 6) select β=0.01 for `B`/`M` sparsity; their code default is `0.1`. Configurable: `--l-spB`/`--l-spM`. |
+
+**Deviations forced by our setup:**
+| # | We do | Their code does | Why |
+|---|---|---|---|
+| S1 | activations via TransformerLens `run_with_cache` | nnsight + `dictionary_learning.ActivationBuffer` | we use TL `HookedTransformer`; no nnsight stack. |
+| S2 | **span-the-bio** windows: within a bio, one zero-padded window per token position; bios processed in parallel, never concatenated | slide over a continuous, boundary-free stream | bios are short, independent docs. **Merging ruled out** (mentor confirmed: bios in parallel, no cross-bio windows). |
+| S3 | `τ = longest bio − 1` (auto) | fixed `τ=20` | bios are ~12–20 tokens; a 21-wide window wouldn't fit. |
+| S4 | fixed-step training loop | token-budget `while n_tokens < total` | no streaming buffer. |
+| S5 | additive `save_to_dir`/`load_from_dir` (safetensors+yaml) + `aggB()` | `torch.save(state_dict)` only | downstream analysis; no effect on training math. |
+| S6 | `noise_mode` default `lap` | argparse default `lap` | unchanged (matches). |
 
 ---
 
-## 4. Package layout — new `sae_CRL/`
-
-(`sae_clrs/` does not actually exist; create `sae_CRL/` fresh. `CRL` = Causal Representation Learning.)
+## 4. Package layout — `sae_CRL/`
 
 ```
 sae_CRL/
-  __init__.py          # empty; makes sae_CRL an importable package
-  sae_crl.py           # class SAE_CRL(nn.Module): the model + loss + save/load
-  windows.py           # one-bio-per-row corpus + within-bio τ+1 window indexing
-  evalSAE_CRL.py       # activation capture + recon / L0 / CE-recovered / structure metrics
-  trainSAE_CRL.py      # driver: setup()+globals, train loop, wandb sweep (clone of trainCLT.py)
-  storage.py           # storage_root() resolver (mirrors clts/storage.py)
-  tests/
-    test_windows.py        # no window crosses a bio boundary; counts correct
-    test_model.py          # parameter shapes, forward shapes, loss components, strict-lower M
-    test_save_load.py      # save_to_dir → load_from_dir round-trip equality
-    test_smoke_train.py    # few-step CPU train: runs end-to-end, total loss decreases
+  __init__.py          # empty package marker
+  storage.py           # storage_root() resolver (env SAE_CRL_STORAGE_ROOT -> PSC -> repo-root sae_CRL_storage/)
+  sae_crl.py           # SAE_CRL(nn.Module) + topk_latents — the LinearIDOL port
+  windows.py           # span_windows / windows_for_batch / pack_bios / build_bio_corpus
+  evalSAE_CRL.py       # capture_resid_post + recon_metrics + structure_metrics + ce_recovered
+  trainSAE_CRL.py      # driver: derive_tau, train_step, setup, train_one_run, sweep
+  tests/               # storage, model, windows, train
 ```
-
-Reused verbatim (imported, not copied): `clts.tl_model.build_hooked_transformer`, `util.condensed_tokenizer.CondensedTokenizer`, `util.bio_sampler.BioSampler`. Structural template: `clts/trainCLT.py`, `clts/clt.py`, `clts/evalCLT.py`, `clts/storage.py`.
+Reused verbatim: `clts.tl_model.build_hooked_transformer`, `util.condensed_tokenizer.CondensedTokenizer`, `util.bio_sampler.BioSampler`. Artifacts: `storage_root()/sae_CRL_runs/<model-name>/{sweep-<id>|standalone}/<trial>/final/`.
 
 ---
 
 ## 5. Model — `SAE_CRL(nn.Module)` (`sae_crl.py`)
 
-Linear, untied encoder/decoder, **no bias** (ablation A.5.3 shows bias doesn't help). Let `x_dim` = activation width (= `d_model` = 384 at `resid_post`), `z_dim` = latent dim (default 3072), `tau` = number of lags (auto-derived to span the largest bio — §3).
+Port of `LinearIDOL`. `x_dim` = `d_model` (384 at resid_post), `z_dim` = latent dim (3072), `tau` = lags.
 
-**Parameters**
-| Param | Shape | Init |
-|---|---|---|
-| `F_enc` | `[x_dim, z_dim]` | `xavier_normal_` |
-| `F_dec` | `[z_dim, x_dim]` | `xavier_normal_` |
-| `M` | `[z_dim, z_dim]` | `xavier_normal_` |
-| `Bs` | `ParameterList(tau × [z_dim, z_dim])` | **zeros** |
+**Parameters:** `F_enc [x_dim,z_dim]`, `F_dec [z_dim,x_dim]`, `M [z_dim,z_dim]` (all xavier); `Bs = ParameterList(τ × [z_dim,z_dim])` (**zeros**). No bias.
 
-(Memory note: `M` and each `B_τ` are `z_dim²`. At `z_dim=3072` that's ~9.4M params each. With `τ` auto-spanning the largest bio (~25–30 tokens for birthday bios), `B` is ~25–30 such matrices → ~250M params (~1 GB fp32), roughly ×3 with Adam states. Fine on an A100/L40; on a memory-constrained Mac/MPS, lower `z_dim` (e.g. 1024–1536) or set `--tau-cap`. `z_dim` and `τ` are the two memory levers.)
+**`forward(Xp) -> 6-tuple`**, `Xp [batch, x_dim, τ+1]` (feature-first, last column = current token):
+1. `Zp = einsum('hd,bdt->bht', F_enc.T, Xp)` → `[batch, z_dim, τ+1]`.
+2. **P2:** if `topk>0`, `Zp = topk_latents(Zp, topk)` (keep top-k by `|·|` over `z_dim` per `(batch, t)`; applied to all timesteps; **not** disabled at eval).
+3. `recons = einsum('dh,bht->bdt', F_dec.T, Zp)`; `loss_mse_Xt = mse(recons[:,:,-1], Xp[:,:,-1])` (last position only).
+4. **P1:** `M = tril(self.M, -1)`. `Zt = M·Zp[:,:,τ] + Σ_{lag=1..τ} B_lag·Zp[:,:,τ-lag]`; accumulate `loss_sparse_Bs = Σ_lag l1(B_lag)`.
+5. `loss_mse_Zt = mse(Zt, Zp[:,:,τ])`; `ε̂ = Zp[:,:,τ] − Zt`; `loss_indep = trace(cov(ε̂))` (`gau`) or `mean|ε̂|` (`lap`); `loss_sparse_M = l1(M)`; `loss_sparse_Zt = l1(Zt)`.
 
-**Methods**
-- `encode(x) -> z`: `z = x @ F_enc`; if `topk_mode=="latent"` and `topk>0`, apply per-row TopK-by-`|z|` (mask all but top-k). `[*, x_dim] → [*, z_dim]`.
-- `decode(z) -> x_hat`: `z @ F_dec`. `[*, z_dim] → [*, x_dim]`.
-- `get_M() -> tril(M, diagonal=-1)` (strictly lower-triangular, zero diagonal).
-- `predict_latent(Z) -> Ẑ_t`: from a window's encoded latents `Z [batch, tau+1, z_dim]`, `z_t = Z[:, -1]`; `Ẑ_t = z_t @ get_M().T + Σ_{lag=1..tau} Z[:, tau-lag] @ Bs[lag-1].T`. If `topk_mode=="prediction"` and `topk>0`, apply TopK to `Ẑ_t`.
-- `forward(window) -> dict`: `window [batch, tau+1, x_dim]`. `Z = encode(window)`; `x_hat_t = decode(Z[:, -1])`; `Ẑ_t = predict_latent(Z)`; `ε̂ = Z[:, -1] − Ẑ_t`. Returns the tensors needed by `compute_loss`. Lookback steps that fall before the bio start are **zero-filled** in `window`; with no encoder bias, `encode(0)=0`, so those lags contribute exactly nothing to `Ẑ_t` — no explicit masking needed.
-- `compute_loss(window, alpha, beta, l_spZ=0.0, noise_mode="lap") -> dict`:
-  - `recon = mse(x_hat_t, window[:, -1])`
-  - `indep = mean(|ε̂|)` if `noise_mode=="lap"` (Laplacian → L1); `trace(cov(ε̂))` if `"gau"`
-  - `sparse_B = Σ_{lag} mean(|Bs[lag]|)`, `sparse_M = mean(|get_M()|)`  *(mean reduction so β is `z_dim`-insensitive; the paper writes these as matrix L1 norms)*
-  - `sparse_Z = mean(|Ẑ_t|)` (only if `l_spZ>0`)
-  - `total = recon + alpha*indep + beta*(sparse_B + sparse_M) + l_spZ*sparse_Z`
-  - returns `{total, recon, indep, sparse_B, sparse_M, sparse_Z}` for wandb.
-- `aggB() -> [z_dim, z_dim]`: `max_τ |B_τ|` (elementwise max-pool over lags) — the paper's aggregated time-delayed relation matrix; kept now (cheap) for the future analysis tier.
-- `save_to_dir(out_dir, model_name)`: safetensors (`F_enc`, `F_dec`, `M`, `B_0..B_{tau-1}`) + `config.yaml` recording `{model_name, hook_name, layer, x_dim, z_dim, tau, topk, topk_mode, noise_mode, eps}`. Mirrors `clt.py`'s on-disk pattern.
-- `load_from_dir(in_dir)` (classmethod): infer dims/`tau` from tensor shapes + `config.yaml`.
-- Attributes for uniform eval/inference: `.z_dim`, `.hook_name`.
-
-Defaults: `topk=100`, `topk_mode="latent"`, `noise_mode="lap"`.
+**Additive (S5):** `aggB()` = `max_τ |B_τ|` → `[z_dim,z_dim]`; `save_to_dir(out_dir, model_name, hook_name, layer)` (safetensors `{F_enc,F_dec,M,B_0..B_{τ-1}}` + `config.yaml`); `load_from_dir`.
 
 ---
 
-## 6. Data & windowing — `windows.py`
+## 6. Windowing — `windows.py` (span-the-bio, S2)
 
-The crux of "respect bio boundaries." One-bio-per-row sidesteps EOS-splitting and guarantees clean boundaries.
-
-- `build_bio_corpus(sampler, tokenizer, n_bios, max_bio_len, seed) -> (tokens, valid_len)`:
-  - Sample `n_bios` diverse `(person, exposure)` pairs (mirror `DiverseBioSubset`'s identity+template diversity), render each via `sampler`, encode via `tokenizer`, **EOS-prefix** each bio.
-  - Each bio is its **own row**, right-padded with EOS to `max_bio_len` (default 48). Bios longer than `max_bio_len` are truncated.
-  - Returns `tokens [n_bios, max_bio_len]` (long) and `valid_len [n_bios]` (real token count per row, excluding right-padding).
-- `capture_resid_post(model, tokens_chunk, hook_name) -> acts [chunk_rows, max_bio_len, x_dim]`: `run_with_cache(names_filter=lambda n: n==hook_name, return_type=None)` on a **chunk** of bio rows, kept **per-sequence** (not flattened).
-- `build_windows(acts_chunk, valid_len_chunk, tau) -> [n_windows, tau+1, x_dim]`: **every** real token position `t` in each bio is a "current" token; its window is `acts[row, t−tau : t+1]`, **zero-left-padded** for any index before that bio's start. A bio of length `L` thus yields `L` windows (not `max(0, L−tau)`), and short bios are never excluded. **No window draws activations from another bio** — out-of-bio positions are zeros, not a neighbor's tokens.
-- **Activation streaming (not precompute-all):** training stores only the **token** corpus (`n_bios × max_bio_len` ids — tiny) and re-runs the frozen model **per chunk** to get activations on demand, matching `trainCLT.py`. This lets `n_bios` scale to a real token budget without holding `n_bios × max_bio_len × x_dim` floats in memory. The **held-out eval** corpus is small, so its activations + `valid_len` are captured **once** in `setup()` (its windows are built later, with the derived `τ`).
-- Train corpus uses `seed=0`; held-out eval corpus uses `seed=1` (the repo's train/eval split convention).
+- `build_bio_corpus(sampler, tokenizer, n_bios, max_bio_len, seed)` → one bio per row, EOS-prefixed, right-padded → `tokens [n_bios, max_bio_len]`, `valid_len [n_bios]`.
+- `span_windows(acts, valid_len, tau)`: for **every** token position `t ∈ [0, valid_len)`, build the window `acts[t−τ .. t]`, **zero-left-padded** before the bio start, transposed to feature-first `[x_dim, τ+1]` (current token = last column). → `[valid_len, x_dim, τ+1]`. So a bio of length `L` yields `L` windows; the first tokens have mostly-zero lookback; **no window crosses a bio boundary**.
+- `windows_for_batch(acts, valid_lens, tau)`: concatenate `span_windows` over a batch of bios → `[total_windows, x_dim, τ+1]`.
+- `τ = derive_tau(valid_len, "auto", tau_cap) = max(valid_len) − 1` (S3), optionally capped.
 
 ---
 
-## 7. Training driver — `trainSAE_CRL.py` (clone of `clts/trainCLT.py`)
+## 7. Training — `trainSAE_CRL.py` (mirrors `main.py`'s per-step loss assembly)
 
-- **Module globals** `ARGS, device, model, tokenizer, sampler, eval_acts, eval_valid_len`, populated once by `setup(args)` (reused across wandb sweep trials).
-- `setup(args)`: `storage_root()` write-probe (fail fast); `build_hooked_transformer`; `CondensedTokenizer.from_remap_path`; `BioSampler`; capture held-out eval **activations + `valid_len`** (`seed=1`). (Eval windows are built later, once `τ` is derived from the train corpus.)
-- `pick_device()`: cuda → mps → cpu.
-- `train_one_run(wandb_config_override=None)`:
-  - Read hyperparams from `wandb.config` with `ARGS` fallbacks.
-  - Build train **token** corpus (`seed=0`); print bio-length histogram + total bios/windows/activation-tokens. **Derive `τ`**: `--tau auto` → `max(valid_len) − 1` (bounded by `--tau-cap` if set), else the given int.
-  - Construct `SAE_CRL` with the derived `τ` (so `B` is sized to the data); `Adam(lr, weight_decay=wd)`.
-  - Loop over epochs; each epoch shuffle bio order and iterate in **chunks of `chunk_rows` bios**: `capture_resid_post(chunk)` → build within-bio windows → step the optimizer over those windows in sub-batches of `window_batch` (`compute_loss` → `backward` → `step`). Re-running the frozen model per chunk keeps memory flat and scales with `n_bios`. **Sparsity warmup**: linearly ramp `beta`/`alpha` over the first ~10% of steps (mirrors CLT's L0 warmup).
-  - `wandb.log` train losses every N steps; held-out eval every M steps.
-  - Final: full eval + `save_to_dir(final_dir, model_name)` + `wandb.log({final_eval/*, storage_path})`.
-- `build_sweep_config()`: wandb grid (`project="interpLM4"`), candidate axes `z_dim × topk × beta × alpha` (`τ` is data-derived, not swept); metric `final_eval/ce_recovered` (maximize); hyperband early-terminate.
-- `_patch_signal_for_worker_threads()`: the SIGINT-off-main-thread shim (needed for `wandb.agent`).
-- `parse_args()` + `DEFAULTS` dict; `main()` branches on `--sweep`.
-
-**CLI:** `--model-dir`, `--data-dir`, `--model-name`, `--hook-template "blocks.{layer}.hook_resid_post"`, `--layer`, `--z-dim`, `--tau`, `--tau-cap`, `--topk`, `--topk-mode {latent,prediction}`, `--noise-mode {lap,gau}`, `--alpha`, `--beta`, `--l-spZ`, `--lr`, `--wd`, `--epochs`, `--n-bios`, `--max-bio-len`, `--chunk-rows`, `--window-batch`, `--eps`, `--sweep`.
-
-**Artifacts:** `storage_root()/sae_CRL_runs/<model-name>/{sweep-<id>|standalone}/<trial>/final/` with `<trial> = z{z_dim}_tau{tau}_k{topk}_a{alpha}_b{beta}_lr{lr}_ep{epochs}_n{n_bios}`.
+- Module globals + `setup(args)`: `storage_root()` write-probe; `build_hooked_transformer`; `CondensedTokenizer`; `BioSampler`; capture a small held-out eval corpus (`seed+1`).
+- `derive_tau`, `train_step(sae, opt, windows, l_ind, l_spB, l_spM, l_spZ, l_mse_Zt)` → assembles `loss = mse_Xt + l_mse_Zt·mse_Zt + l_ind·indep + l_spB·sp_B + l_spM·sp_M + l_spZ·sp_Zt`, backward, Adam step.
+- `train_one_run`: build train token corpus (`seed=0`); derive `τ`; build `SAE_CRL`; loop epochs → batches of `batch_bios` → `capture_resid_post` → `windows_for_batch` → SGD over windows in sub-batches of `batch_windows`. Periodic + final eval; `save_to_dir`; wandb logging (`project="interpLM4"`).
+- `build_sweep_config` (z_dim × topk), `_patch_signal_for_worker_threads`, `parse_args`, `main` (branches on `--sweep`).
 
 ---
 
 ## 8. Eval — `evalSAE_CRL.py`
 
-`@torch.no_grad`, given `(model, sae_crl, eval_acts, eval_valid_len, hook_name)` (eval windows are built with `sae_crl`'s derived `τ`):
-- **Reconstruction:** MSE, NMSE, explained variance of `decode(encode(x))` vs `x` on held-out windows (current-step).
-- **Latent sparsity:** L0 (mean active latents/token; `= k` when `topk_mode=="latent"`), dead-feature fraction.
-- **CE-recovered:** splice `decode(encode(acts))` into the model at `hook_name` via `run_with_hooks`; `ce_recovered = (ce_zero − ce_method)/(ce_zero − ce_clean)`. Same metric/shape as the SAE/CLT eval (directly comparable). Measures the SAE/reconstruction half; the `B_τ`/`M` structure is reported separately.
-- **Structure diagnostics:** `sparse_B`, `sparse_M`, independence value `mean(|ε̂|)`, and counts of `|B_τ|`/`|M|` entries above a threshold (sanity, not the full analysis tier).
+- `recon_metrics`: reconstruction MSE / explained variance on the **last** window position; current-token **L0** (= `topk` under P2).
+- `structure_metrics`: `B_τ`/`M` L1 sparsity + above-threshold relation counts.
+- `ce_recovered`: splice the sparse reconstruction `decode(topk(encode(resid_post)))` at the hook via `run_with_hooks`; `(ce_zero − ce_sae)/(ce_zero − ce_orig)`. Comparable to the SAE/CLT eval.
 
 ---
 
-## 9. Storage — `sae_CRL/storage.py`
+## 9. Defaults & out-of-scope
 
-Mirror `clts/storage.py` (dependency-light). `storage_root()` resolution: (1) `$SAE_CRL_STORAGE_ROOT`; (2) PSC path if it exists; (3) repo-root `sae_CRL_storage/` fallback (Mac). Artifacts under `sae_CRL_runs/`. Add `sae_CRL_storage/` and `sae_CRL/sae_CRL_runs/` to `.gitignore`. (Per project memory: use the resolver, never hardcode `STORAGE_ROOT`.)
+**Defaults** (single source of truth: `DEFAULTS` in `trainSAE_CRL.py`): model `grid-L4-H6`; hook `blocks.{L}.hook_resid_post`, `L=2`; `z_dim=3072`; `τ=auto` (longest bio−1) with `--tau-cap`; `topk=100`; `noise_mode=lap`; `l_ind=0.1`, **`l_spB=l_spM=0.01` (P4)**, **`l_spZ=0` (P3)**, `mse_Zt=off`, `w=off`; `lr=0.01`, `wd=1e-4`; `epochs=10`; `n_bios=50_000`; `max_bio_len=48`; `batch_bios=256`; `batch_windows=4096`; `eps=1e-5`.
 
----
+**Memory note:** `B` holds `τ` matrices of `z_dim²`. With τ auto-spanning the largest bio (~25–30) at `z_dim=3072`, that's ~250M params (~1 GB fp32, ~3× with Adam). Fine on A100/L40; on a memory-constrained Mac drop `z_dim` (e.g. 1024–1536) or set `--tau-cap`.
 
-## 10. Defaults (single source of truth)
-
-| Knob | Default | Source |
-|---|---|---|
-| base model | `model/grid-L4-H6` (`d_model=384`) | "current" model |
-| hook | `blocks.{L}.hook_resid_post`, `L=2` | paper-faithful site |
-| `eps` | `1e-5` | TL default / repo convention |
-| `z_dim` | 3072 | reference's z=3072 config (~8× of 384) |
-| `tau` | `auto` (= max bio length − 1) | spans the largest bio (first→last token) |
-| `tau_cap` | none | optional upper bound on auto `τ` (memory) |
-| `max_bio_len` | 48 | per-row pad length |
-| `topk` / `topk_mode` | 100 / `latent` | paper App. A.5.1 (TopK on latents) |
-| `noise_mode` | `lap` | Eq. 7 / footnote |
-| `alpha` (noise) | 0.1 | App. A.5.1 / A.5.3 |
-| `beta` (B, M sparsity) | 0.01 | App. A.5.3 |
-| `l_spZ` (latent L1) | 0.0 | paper has none (off by default) |
-| `lr` / `wd` | 0.01 / 1e-4 | App. A.5.1 (Adam) |
-| `n_bios` | 50_000 | streamed per-chunk, so scalable; tune to convergence via loss curves |
-| `chunk_rows` / `window_batch` | 512 / 4096 | bios per model-run / windows per optimizer sub-batch |
-| `epochs` | 10 | starting point; tune via loss curves |
+**Out of scope this round:** relation-extraction dashboards (the model already exposes `aggB()` + stores `B`/`M`), synthetic MCC/identifiability validation, SAEBench comparison, circuit-tracer attribution.
 
 ---
 
-## 11. Error handling & guardrails
+## 10. References
 
-- `setup()` write-probes `storage_root()` and aborts early if unwritable.
-- `build_bio_corpus` prints a **bio-length histogram** and total bios / windows / activation-tokens; `train_one_run` prints the **derived `τ`** and **warns** that lags beyond the median bio length are supervised only by the longest bios (sparse high-lag gradients). With zero-left-padding every non-empty bio yields ≥1 window, so a zero-window corpus can only mean an empty/failed build.
-- `--hook-template` must contain `{layer}`.
-- `CondensedTokenizer.encode` raises on out-of-vocab tokens; corpus build surfaces that clearly.
-- Device-agnostic (`pick_device`); fp32 end-to-end.
-
----
-
-## 12. Testing strategy
-
-- `test_windows.py`: construct a tiny corpus with known `valid_len`; assert no produced window contains a position `≥ valid_len[b]` and none crosses into another row; assert window count `= Σ_b max(0, valid_len[b] − tau)`.
-- `test_model.py`: forward on random input asserts shapes; `get_M()` is strictly lower-triangular (zero diagonal); each loss component is a finite scalar; TopK in `latent` mode yields exactly `k` nonzero latents/row.
-- `test_save_load.py`: `save_to_dir → load_from_dir` reproduces all parameters and config.
-- `test_smoke_train.py`: 20–50 steps on CPU with tiny dims; assert it runs and `total` loss at the end < at the start.
-
----
-
-## 13. Out of scope this round (clean drop-in later)
-
-- **Relation analysis / dashboards:** rank top `aggB` / `M` entries into interpretable concept relations; per-feature dashboards (would mirror `saes/sae_explorer.py` + `clts/gen_feature_dashboards.py`). The model already exposes `aggB()` and stores `B_τ`/`M`, so this tier attaches without model changes.
-- **Synthetic identifiability validation** (MCC/SHD against ground-truth `A`/`B`/`M`) — the natural confidence check before trusting real activations.
-- **SAEBench-style quantitative comparison** vs the existing SAE/CLT runs.
-- **circuit-tracer attribution** wiring.
-
----
-
-## 14. References
-
-- Song, Sun, Li, Zheng, Zhang. *LLM Interpretability with Identifiable Temporal-Instantaneous Representation.* NeurIPS 2025. arXiv:2509.23323v2.
-- Reference code: `github.com/xiangchensong/temp-inst-sae` (`examples/linear_idol_model.py`, `examples/main.py`, `synthetic/complete-3.py`).
-- Repo templates: `clts/{clt,trainCLT,evalCLT,storage,tl_model}.py`, `saes/{trainSAE,evalSAE}.py`, `util/{condensed_tokenizer,bio_sampler,diverse_subset}.py`.
+- Song et al., NeurIPS 2025, arXiv:2509.23323v2.
+- Reference code (cloned, source of truth): `reference/temp-inst-sae/examples/{linear_idol_model.py,main.py,utils.py}`.
+- Implementation plan (complete code, TDD): `docs/superpowers/plans/2026-06-01-sae-CRL-framework.md`.
+- Repo seam/templates: `clts/{tl_model,trainCLT,evalCLT,clt,storage}.py`, `util/{condensed_tokenizer,bio_sampler}.py`.

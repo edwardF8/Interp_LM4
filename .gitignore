@@ -34,3 +34,7 @@ clts/.venv-ct/
 clt_storage/
 clts/clt_runs/*
 
+# SAE-CRL artifacts + vendored reference repo (local analysis input, not redistributed)
+sae_CRL_storage/
+reference/
+

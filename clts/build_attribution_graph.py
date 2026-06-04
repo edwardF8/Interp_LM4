@@ -109,6 +109,64 @@ def build_graph(model_dir, clt_dir, data_dir, scan_name, graph_dir, slug,
     # start with './' fall through to the CDN (Anthropic CloudFront), which
     # won't have our custom model's features.  scan_name stays clean for the
     # report and for naming the dashboard subfolder.
+    # create_graph_files OVERWRITES <slug>.json, wiping any viewer state (pins,
+    # supernodes, positions, renames) a prior Save wrote there. Preserve that
+    # layout across a rebuild — but ONLY when the rebuild is provably identical,
+    # so a stale layout is never re-attached to a changed graph (which would
+    # misalign sg_pos / mislabel nodes). Identity is checked against a per-slug
+    # `_buildInputs` stamp embedded in the graph file (run-meta.json is shared
+    # across slugs in this dir and overwritten each build, so it can't be used).
+    # If the inputs differ, the layout is backed up instead of applied.
+    # graph_status is surfaced so the notebook can report whether you're
+    # reopening an arranged graph or starting fresh.
+    slug_json = graph_dir / f"{slug}.json"
+    build_inputs = {
+        "prompt": prompt, "target": target,
+        "model_dir": str(model_dir), "clt_dir": str(clt_dir),
+        "data_dir": str(data_dir), "max_feature_nodes": max_feature_nodes,
+        "max_n_logits": max_n_logits, "desired_logit_prob": desired_logit_prob,
+    }
+    saved_qparams = None
+    graph_status = "new"                        # no prior <slug>.json
+    layout_counts = {"pins": 0, "supernodes": 0, "renames": 0}
+    if slug_json.exists():
+        graph_status = "rebuilt"                # existed, but no saved layout yet
+        try:
+            prev = json.loads(slug_json.read_text())
+        except Exception:
+            prev = {}
+        prev_q = prev.get("qParams") or {}
+
+        def _count(key):
+            v = prev_q.get(key)
+            if isinstance(v, list):
+                return len(v)
+            if isinstance(v, str) and v not in ("", "null"):
+                if key == "pinnedIds":
+                    return len(v.split(","))
+                try:
+                    return len(json.loads(v))
+                except Exception:
+                    return 0
+            return 0
+
+        layout_counts = {"pins": _count("pinnedIds"),
+                         "supernodes": _count("supernodes"),
+                         "renames": _count("clerps")}
+        has_layout = any(layout_counts.values()) or bool(prev_q.get("sg_pos"))
+        if has_layout:
+            if prev.get("_buildInputs") == build_inputs:
+                saved_qparams = prev_q          # identical graph -> safe to keep
+                graph_status = "reused"
+            else:
+                # Inputs differ (or a pre-stamp graph): don't risk a stale layout.
+                backup = graph_dir / f"{slug}.qparams-backup.json"
+                backup.write_text(json.dumps(prev_q, indent=2))
+                graph_status = "inputs-changed"
+                if verbose:
+                    print(f"[build] inputs differ for '{slug}'; saved layout "
+                          f"NOT applied — backed up to {backup.name}")
+
     local_scan = f"./data/{scan_name}"
     create_graph_files(
         graph_or_path=graph,
@@ -118,6 +176,16 @@ def build_graph(model_dir, clt_dir, data_dir, scan_name, graph_dir, slug,
         node_threshold=0.8,
         edge_threshold=0.98,
     )
+
+    # Stamp this build's inputs (for the next rebuild's identity check) and
+    # re-attach the preserved viewer layout, if any.
+    g_json = json.loads(slug_json.read_text())
+    g_json["_buildInputs"] = build_inputs
+    if saved_qparams is not None:
+        g_json["qParams"] = saved_qparams
+        if verbose:
+            print(f"[build] preserved saved viewer layout (qParams) for '{slug}'")
+    slug_json.write_text(json.dumps(g_json, indent=2))
 
     # Use logit_token_ids (logit_tokens is deprecated in circuit-tracer 0.4.1)
     top_token = model.tokenizer.decode(graph.logit_token_ids[0].item())
@@ -160,7 +228,8 @@ def build_graph(model_dir, clt_dir, data_dir, scan_name, graph_dir, slug,
     if verbose:
         print(json.dumps(report, indent=2))
     return {"graph": graph, "pt_path": str(pt_path), "report": report,
-            "run_meta": run_meta}
+            "run_meta": run_meta, "status": graph_status,
+            "layout_counts": layout_counts}
 
 
 def main():
