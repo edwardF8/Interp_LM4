@@ -44,7 +44,7 @@ EXPECTED_TRIALS=$(( $(awk -F, '{print NF}' <<<"$BETAS") * $(awk -F, '{print NF}'
 # ---------------------------------------------------------------------------
 submit_all() {
     echo "Submitting layers [$LAYERS] for $MODEL_NAME: beta=[$BETAS] x topk=[$TOPKS] = $EXPECTED_TRIALS trials/layer"
-    local exp="ALL,MODEL_NAME=$MODEL_NAME,DATASET=$DATASET,BETAS=$BETAS,TOPKS=$TOPKS,Z_DIM=$Z_DIM,EPOCHS=$EPOCHS,N_BIOS=$N_BIOS,LR=$LR,NOISE_MODE=$NOISE_MODE"
+    local exp="ALL,MODEL_NAME=$MODEL_NAME,BETAS=$BETAS,TOPKS=$TOPKS,Z_DIM=$Z_DIM,EPOCHS=$EPOCHS,N_BIOS=$N_BIOS,LR=$LR,NOISE_MODE=$NOISE_MODE"
     for L in $LAYERS; do
         out=$(sbatch -J "crl-L$L" -t "$TIME" --export="$exp,LAYER=$L" "$SBATCH")
         jid=${out##* }                  # sbatch prints "Submitted batch job 12345"
