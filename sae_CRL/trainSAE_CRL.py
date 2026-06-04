@@ -91,9 +91,11 @@ def setup(args):
     eval_windows = (eacts.cpu(), evl)
 
 
-def trial_name(z, tau, k, lr, ep, n, beta=None):
+def trial_name(z, tau, k, lr, ep, n, beta=None, layer=None):
     base = f"z{z}_tau{tau}_k{k}_lr{lr:g}_ep{ep}_n{n}"
-    return f"{base}_b{beta:g}" if beta is not None else base   # beta in name so sweep trials don't collide
+    if beta is not None:
+        base = f"{base}_b{beta:g}"                              # beta in name so sweep trials don't collide
+    return f"L{layer}_{base}" if layer is not None else base    # L<layer> prefix mirrors saes/trainSAE.py
 
 
 def train_one_run(_override=None):
@@ -143,7 +145,7 @@ def train_one_run(_override=None):
 
     final_dir = (storage_root() / "sae_CRL_runs" / ARGS.model_name /
                  (f"sweep-{sweep_id}" if sweep_id else "standalone") /
-                 trial_name(z_dim, tau, topk, lr, epochs, n_bios, beta=beta) / "final")
+                 trial_name(z_dim, tau, topk, lr, epochs, n_bios, beta=beta, layer=ARGS.layer) / "final")
     final = (recon_metrics(sae, eval_w) | structure_metrics(sae)
              | ce_recovered(model, sae, eval_tokens, hk))
     sae.save_to_dir(final_dir, model_name=ARGS.model_name, hook_name=hk, layer=ARGS.layer)
@@ -155,12 +157,15 @@ def train_one_run(_override=None):
 
 def build_sweep_config():
     # CRL-interpretation sweep: graph-sparsity beta (sets l_spB = l_spM, paper Eq.9) x latent L0 (topk).
-    # Grid, no early-terminate: all 6 trials run to completion so every interpretation is comparable.
+    # Grid values come from --sweep-beta / --sweep-topk (comma lists); defaults below if unset.
+    # No early-terminate: all trials run to completion so every interpretation is comparable.
+    betas = [float(x) for x in ARGS.sweep_beta.split(",")] if ARGS.sweep_beta else [0.001, 0.01, 0.1]
+    topks = [int(x) for x in ARGS.sweep_topk.split(",")] if ARGS.sweep_topk else [25, 100]
     return {"program": "trainSAE_CRL.py", "method": "grid",
-            "name": f"sae_CRL_sweep_{ARGS.model_name}",
+            "name": f"sae_CRL_sweep_{ARGS.model_name}_L{ARGS.layer}",
             "metric": {"name": "final_eval/ce_recovered", "goal": "maximize"},
-            "parameters": {"beta": {"values": [0.001, 0.01, 0.1]},
-                           "topk": {"values": [25, 100]}}}
+            "parameters": {"beta": {"values": betas},
+                           "topk": {"values": topks}}}
 
 
 def _patch_signal_for_worker_threads():
@@ -189,7 +194,7 @@ def parse_args():
     p.add_argument("--l-spZ", type=float, default=DEFAULTS["l_spZ"])
     p.add_argument("--mse-Zt", dest="mse_Zt", action="store_true")
     p.add_argument("--lr", type=float, default=DEFAULTS["lr"])
-    p.add_argument("--wd", xtype=float, default=DEFAULTS["wd"])
+    p.add_argument("--wd", type=float, default=DEFAULTS["wd"])
     p.add_argument("--epochs", type=int, default=DEFAULTS["epochs"])
     p.add_argument("--n-bios", dest="n_bios", type=int, default=DEFAULTS["n_bios"])
     p.add_argument("--max-bio-len", dest="max_bio_len", type=int, default=DEFAULTS["max_bio_len"])
@@ -197,6 +202,10 @@ def parse_args():
     p.add_argument("--batch-windows", dest="batch_windows", type=int, default=DEFAULTS["batch_windows"])
     p.add_argument("--eps", type=float, default=DEFAULTS["eps"])
     p.add_argument("--sweep", action="store_true")
+    p.add_argument("--sweep-beta", dest="sweep_beta", type=str, default=None,
+                   help="comma list of beta (l_spB=l_spM) values for --sweep grid; default 0.001,0.01,0.1")
+    p.add_argument("--sweep-topk", dest="sweep_topk", type=str, default=None,
+                   help="comma list of topk values for --sweep grid; default 25,100")
     return p.parse_args()
 
 

@@ -292,6 +292,19 @@ def train_one_run(wandb_config_override: dict | None = None) -> None:
 # Sweep config
 # ============================================================================
 
+def _env_nums(name: str, default: list, cast=float) -> list:
+    """Parse a space/comma-separated numeric list from env var `name`.
+    Returns `default` (the baked-in sweep value) if the var is unset/empty, so
+    scripts/train_clt_psc.sh can OVERRIDE the grid without editing this file."""
+    raw = os.environ.get(name, "").replace(",", " ").strip()
+    return [cast(x) for x in raw.split()] if raw else default
+
+
+def _env_num(name: str, default, cast=float):
+    raw = os.environ.get(name, "").strip()
+    return cast(raw) if raw else default
+
+
 def build_sweep_config() -> dict:
     # Broader stage-1 sweep (see docs/superpowers/specs/2026-05-31-broader-clt-sweep-design.md).
     # The first sweep's optimum sat in the grid corner (max expansion, min l0,
@@ -311,12 +324,15 @@ def build_sweep_config() -> dict:
         "method":  "grid",
         "name":    f"clt_sweep_{ARGS.model_name}",
         "metric":  {"name": "final_eval/ce_recovered", "goal": "maximize"},
+        # Defaults below are the baked-in grid; each is overridable via an env
+        # var (set by scripts/train_clt_psc.sh when OVERRIDE_SWEEP=1). Unset env
+        # -> baked-in value, so the sweep is unchanged unless you opt in.
         "parameters": {
-            "expansion":      {"values": [4, 8, 16, 32]},
-            "l0_coefficient": {"values": [1.0, 2.0, 5.0]},
-            "lr":             {"value":  1e-4},
-            "n_examples":     {"value":  50_000},
-            "epochs":         {"value":  10},
+            "expansion":      {"values": _env_nums("CLT_SWEEP_EXPANSION", [4, 8, 16, 32], int)},
+            "l0_coefficient": {"values": _env_nums("CLT_SWEEP_L0", [1.0, 2.0, 5.0], float)},
+            "lr":             {"value":  _env_num("CLT_SWEEP_LR", 1e-4, float)},
+            "n_examples":     {"value":  _env_num("CLT_SWEEP_N_EXAMPLES", 50_000, int)},
+            "epochs":         {"value":  _env_num("CLT_SWEEP_EPOCHS", 10, int)},
         },
         "early_terminate": {"type": "hyperband", "min_iter": 5, "eta": 3},
     }

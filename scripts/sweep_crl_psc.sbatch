@@ -32,9 +32,13 @@ REMOTE_BASE="${REMOTE_BASE:-/jet/home/friedmae/data_storage/LM4_Results}"
 GRID="${GRID:-$REMOTE_BASE/runResults/bioS_N-Bd_final_grid/20260520-134455/grid}"
 MODEL_NAME="${MODEL_NAME:-grid-L4-H6}"
 MODEL_DIR="${MODEL_DIR:-$GRID/$MODEL_NAME/final}"     # ends in /final -> model_name auto = parent dir
-DATA_DIR="${DATA_DIR:-$REMOTE_BASE/Data/bioS_N-Bd_final_grid}"
+DATASET="${DATASET:-bioS_N-Bd_final_grid}"            # the dataset the model was trained on
+DATA_DIR="${DATA_DIR:-$REMOTE_BASE/Data/$DATASET}"    # tokenizer (old_to_new.json) + bios (people.json)
 CONDA_ENV="${CONDA_ENV:-lm4}"
-# fixed (non-swept) knobs — beta & topk come from the sweep, everything else from here:
+# swept grid (the "different CRL interps"); empty -> driver defaults (0.001,0.01,0.1 / 25,100):
+BETAS="${BETAS:-}"            # comma list, e.g. "0.001,0.01,0.1"  (l_spB = l_spM)
+TOPKS="${TOPKS:-}"            # comma list, e.g. "25,100"          (latent L0)
+# fixed (non-swept) knobs:
 LAYER="${LAYER:-2}"
 Z_DIM="${Z_DIM:-3072}"        # 8x d_model(=384); held fixed so beta/topk are the only axes
 EPOCHS="${EPOCHS:-10}"
@@ -72,6 +76,13 @@ for p in "$MODEL_DIR/config.json" "$DATA_DIR/old_to_new.json" "$DATA_DIR/people.
          sae_CRL/trainSAE_CRL.py; do
     [ -e "$p" ] || { echo "  MISSING: $p" >&2; fail=1; }
 done
+echo "  model:   $MODEL_DIR"
+echo "  dataset: $DATA_DIR"
+# the dataset MUST be the one the model was trained on (its name is baked into the model run path):
+case "$MODEL_DIR" in
+    *"$DATASET"*) : ;;   # dataset name present in model path -> consistent
+    *) echo "  DATASET='$DATASET' not found in MODEL_DIR -- data must match the model's training set" >&2; fail=1 ;;
+esac
 # sweeps need ONLINE wandb (offline mode can't orchestrate a sweep agent):
 if ! grep -q "api.wandb.ai" "${HOME}/.netrc" 2>/dev/null && [ -z "${WANDB_API_KEY:-}" ]; then
     echo "  wandb not authenticated: run \`wandb login\` on the login node, or set WANDB_API_KEY" >&2
@@ -90,7 +101,10 @@ PY
 echo "preflight OK"
 
 # ---- run sweep -------------------------------------------------------------
-echo "=== SAE-CRL sweep (beta x topk, 6 trials) on $(hostname) ==="
+GRID_ARGS=()
+[ -n "$BETAS" ] && GRID_ARGS+=(--sweep-beta "$BETAS")
+[ -n "$TOPKS" ] && GRID_ARGS+=(--sweep-topk "$TOPKS")
+echo "=== SAE-CRL sweep (beta=[${BETAS:-default}] x topk=[${TOPKS:-default}]) L$LAYER on $(hostname) ==="
 date
 nvidia-smi || true
 python -u sae_CRL/trainSAE_CRL.py --sweep \
@@ -102,7 +116,8 @@ python -u sae_CRL/trainSAE_CRL.py --sweep \
     --epochs "$EPOCHS" \
     --n-bios "$N_BIOS" \
     --lr "$LR" \
-    --noise-mode "$NOISE_MODE"
+    --noise-mode "$NOISE_MODE" \
+    "${GRID_ARGS[@]}"
 
 echo "Finished: $(date)"
 echo "Runs under: $REMOTE_BASE/sae_CRL_runs/$MODEL_NAME/sweep-<id>/"
