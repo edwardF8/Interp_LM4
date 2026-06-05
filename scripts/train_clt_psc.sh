@@ -23,7 +23,7 @@ set -euo pipefail
 # ############################################################################
 
 # --- what to train on -------------------------------------------------------
-MODEL_NAME="grid-L1-H6"          # base model identifier (and output subdir)
+MODEL_NAME="${MODEL_NAME:-grid-L1-H6}"   # base model identifier (and output subdir); override via env (see submit_clt_sweeps_grid.sh)
 REMOTE_BASE="/jet/home/friedmae/data_storage/LM4_Results"
 GRID="$REMOTE_BASE/runResults/bioS_N-Bd_final_grid/20260520-134455/grid"
 MODEL_DIR="$GRID/$MODEL_NAME/final"               # HF checkpoint dir
