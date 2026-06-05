@@ -34,21 +34,24 @@ STAGE="$(mktemp -d -p "$(dirname "$OUT")" lm4pack.XXXXXX)"
 trap 'rm -rf "$STAGE"' EXIT
 echo "staging in $STAGE"
 
-# 1) code -- repo working tree minus heavy / machine-specific dirs
+# 1) code -- repo working tree minus heavy / machine-specific dirs.
+# tar-pipe instead of rsync (login nodes lack rsync); GNU tar --exclude is
+# no-anchored, so bare names like '.git'/'__pycache__' match at any depth.
 mkdir -p "$STAGE/bundle/Interp_LM4"
+echo "copying code   <- $REPO"
 # shellcheck disable=SC2086
-rsync -a \
-  --exclude '.git' --exclude '.venv*' --exclude '*.venv*' \
-  --exclude 'clt_storage' --exclude '__pycache__' --exclude '*.pyc' \
-  --exclude '.ipynb_checkpoints' --exclude 'logs' \
-  $EXTRA_EXCLUDES \
-  "$REPO/" "$STAGE/bundle/Interp_LM4/"
+( cd "$REPO" && tar cf - \
+    --exclude='.git' --exclude='.venv*' --exclude='*.venv*' \
+    --exclude='clt_storage' --exclude='__pycache__' --exclude='*.pyc' \
+    --exclude='.ipynb_checkpoints' --exclude='logs' \
+    $EXTRA_EXCLUDES . ) | ( cd "$STAGE/bundle/Interp_LM4" && tar xf - )
 
-# 2) artifacts -- live outside the repo, copied with a clean relative layout
-mkdir -p "$STAGE/bundle/artifacts"
-echo "copying model  <- $MODEL_DIR"; rsync -a "$MODEL_DIR/" "$STAGE/bundle/artifacts/model/"
-echo "copying clt    <- $CLT_DIR";   rsync -a "$CLT_DIR/"   "$STAGE/bundle/artifacts/clt/"
-echo "copying data   <- $DATA_DIR";  rsync -a "$DATA_DIR/"  "$STAGE/bundle/artifacts/data/"
+# 2) artifacts -- live outside the repo, copied with a clean relative layout.
+# cp -aL dereferences any symlinks so the bundle is self-contained.
+mkdir -p "$STAGE/bundle/artifacts/model" "$STAGE/bundle/artifacts/clt" "$STAGE/bundle/artifacts/data"
+echo "copying model  <- $MODEL_DIR"; cp -aL "$MODEL_DIR/." "$STAGE/bundle/artifacts/model/"
+echo "copying clt    <- $CLT_DIR";   cp -aL "$CLT_DIR/."   "$STAGE/bundle/artifacts/clt/"
+echo "copying data   <- $DATA_DIR";  cp -aL "$DATA_DIR/."  "$STAGE/bundle/artifacts/data/"
 echo "${SCAN_NAME:-grid-L4-H6}" > "$STAGE/bundle/artifacts/SCAN_NAME"
 
 # 3) one tarball
