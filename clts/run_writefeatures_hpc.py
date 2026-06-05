@@ -136,7 +136,8 @@ def main():
     ap.add_argument("--out-dir", default=None)
     ap.add_argument("--device", default="cpu", help="cpu | cuda")
     ap.add_argument("--batch-size", type=int, default=None,
-                    help="override attribution batch size (raise it to fill a GPU)")
+                    help="(ignored) retained for compat; the fast logit-only path runs "
+                         "at batch width 1, so attribution batch size no longer applies")
     ap.add_argument("--top-k", type=int, default=10, help="unified co-influencer depth per graph")
     ap.add_argument("--multi-tok-top-k", type=int, default=5)
     ap.add_argument("--pos-span-flag", type=int, default=3)
@@ -228,9 +229,6 @@ def main():
 
     all_t = wf.birthday_templates()
     tmpl_list = wf.resolve_templates(templates, all_t)
-    build_params = dict(wf.DEFAULT_BUILD_PARAMS)
-    if args.batch_size:
-        build_params["batch_size"] = args.batch_size
     twl = frozenset({"born", "birth", "day", "date"})
     include_tokens = not args.no_token_nodes
 
@@ -251,8 +249,10 @@ def main():
                     continue
                 try:
                     prompt = wf.template_prompt(person, t_val, sampler)
-                    graph = wf.attribute_fast(model, prompt, target_token, **build_params)
-                    node_all = wf.node_input_all(graph, target_token, model.tokenizer)
+                    # Fast path: only the target logit node's incoming edges (features +
+                    # MLP-error + token nodes), skipping the discarded feature->feature
+                    # attribution. ~50-75x faster/graph than building the full graph.
+                    node_all = wf.attribute_node_inputs(model, prompt, target_token)
                 except Exception as exc:
                     for f in feats:
                         aggs[f]["n_skipped"] += 1

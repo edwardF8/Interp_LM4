@@ -354,6 +354,52 @@ def test_unskew_guardrail_outputs_1_to_3_unchanged():
 
 
 @pytest.mark.skipif(not _HAS_ARTIFACTS, reason="model/CLT/data artifacts not present")
+def test_attribute_node_inputs_matches_full_graph():
+    """The fast logit-only path must reproduce the full graph's edges INTO the logit
+    node -- features, MLP-error nodes, and token nodes -- to floating-point noise."""
+    from pathlib import Path
+    from clts.export_tokenizer import ensure_hf_tokenizer
+    from clts.load_replacement_model import load_replacement_model
+    from util.bio_sampler import BioSampler
+    from util.condensed_tokenizer import CondensedTokenizer
+
+    model = load_replacement_model(Path(_MODEL_DIR), Path(_CLT_DIR),
+                                   ensure_hf_tokenizer(Path(_DATA_DIR)), "grid-L4-H6",
+                                   device="cpu")
+    sampler = BioSampler(Path(_DATA_DIR) / "people.json", fields=("birthday",))
+    ct = CondensedTokenizer.from_remap_path(Path(_DATA_DIR) / "old_to_new.json")
+    _, person = wf.people_in_month(sampler, ct, "August")[0]
+    prompt = wf.template_prompt(person, 0, sampler)
+    target = wf.resolve_target("month", person)
+
+    full = wf.node_input_all(wf.attribute_fast(model, prompt, target, **wf.DEFAULT_BUILD_PARAMS),
+                             target, model.tokenizer)
+    fast = wf.attribute_node_inputs(model, prompt, target)
+
+    # features: fast keeps ALL active features; must match on every feature the full
+    # (truncated) graph kept, summed per (layer, fidx) so position order is irrelevant.
+    def agg(block):
+        out = {}
+        for e in block:
+            out[(e["layer"], e["fidx"])] = round(out.get((e["layer"], e["fidx"]), 0.0)
+                                                  + e["edge"], 6)
+        return out
+    af, ff = agg(full["features"]), agg(fast["features"])
+    assert set(af).issubset(set(ff))                       # fast is a superset
+    assert all(abs(af[k] - ff[k]) < 1e-4 for k in af)
+    # target feature's rank bucket is unchanged
+    assert (wf.feature_rank(wf.aggregate_by_feature(full["features"]), (3, 4768))["rank"]
+            == wf.feature_rank(wf.aggregate_by_feature(fast["features"]), (3, 4768))["rank"])
+    # MLP-error and token nodes: identical sets, matching edges
+    fe = {(e["layer"], e["pos"]): e["edge"] for e in full["errors"]}
+    xe = {(e["layer"], e["pos"]): e["edge"] for e in fast["errors"]}
+    assert set(fe) == set(xe) and all(abs(fe[k] - xe[k]) < 1e-4 for k in fe)
+    ft = {e["pos"]: e["edge"] for e in full["tokens"]}
+    xt = {e["pos"]: e["edge"] for e in fast["tokens"]}
+    assert set(ft) == set(xt) and all(abs(ft[k] - xt[k]) < 1e-4 for k in ft)
+
+
+@pytest.mark.skipif(not _HAS_ARTIFACTS, reason="model/CLT/data artifacts not present")
 def test_run_hypothesis_end_to_end(tmp_path):
     from pathlib import Path
     from clts.export_tokenizer import ensure_hf_tokenizer

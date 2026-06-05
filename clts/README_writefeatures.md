@@ -103,6 +103,25 @@ aggregates + reports — *not* the ~270 GB an interactive cache would cost. The
 per-month target features live in `MONTH_FEATURES` at the top of
 `run_writefeatures_hpc.py`; months with two features evaluate both from the same graph.
 
+**Logit-only fast path (the big speedup).** The HPC worker does *not* build the full
+attribution graph. The analysis only ever reads the edges INTO the target-month logit
+node, so `wf.attribute_node_inputs` computes just that one row — circuit-tracer's
+Phase 0–3 at batch width 1 — and skips Phase 4 (one backward pass per feature node,
+filling in feature→feature edges we never read). Measured **~35× faster per graph** on
+the grid-L4-H6 *CPU* build (~1.4 s → ~0.04 s), bottoming out the full run at ~30
+single-core hours. On the **NVIDIA GPU** the multiplier is usually smaller (the GPU was
+never compute-saturated by the wasted Phase-4 work) but still a clear win, since the
+1024-wide forward and all feature backward passes are gone — **calibrate on the GPU**
+(step 1 below) to get the real per-graph rate before sizing the array. It returns the
+identical
+`{features, errors, tokens}` decomposition — feature, **MLP-error**, and token edges all
+come from the same backward pass and match the full graph to float noise (regression test
+`test_attribute_node_inputs_matches_full_graph`). One deliberate difference: it keeps
+**all** active features (no `max_feature_nodes=4096` truncation), so the rank denominator
+is the complete active-feature set — strictly more complete; top buckets are unchanged.
+(The interactive notebook still uses the full-graph path so the circuit viewer stays
+available.)
+
 ### 0. Build the env once
 
 ```bash

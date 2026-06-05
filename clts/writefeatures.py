@@ -323,6 +323,74 @@ def node_input_all(graph, target_token, tokenizer):
     }
 
 
+def attribute_node_inputs(model, prompt, target_token):
+    """FAST PATH for the feature-in-node analysis: compute ONLY the direct edges
+    INTO the `target_token` logit node, and skip circuit-tracer's feature->feature
+    attribution (its "Phase 4"), which `node_input_all` never reads.
+
+    `attribute()` builds the full dense [n_nodes, n_nodes] adjacency: Phase 3 computes
+    the (cheap) logit rows we use, then Phase 4 runs one backward pass per feature node
+    (up to `max_feature_nodes`) to fill in every feature's incoming edges -- all
+    discarded here. This path runs only Phases 0-3 at batch width 1 (a single target),
+    so it is ~50-75x faster per graph (measured on the grid-L4-H6 CPU build) while
+    returning the SAME {'features','errors','tokens'} structure as `node_input_all`.
+
+    The logit-row edge values -- features, ERROR nodes (the per-layer/position MLP
+    residual the transcoder fails to reconstruct), and token nodes -- all come from the
+    SAME single backward pass and match the full graph to floating-point noise
+    (regression-tested). Phase 4, which is skipped, only fills incoming edges to feature
+    nodes and contributes nothing to this logit's inputs. One deliberate difference:
+    this keeps ALL active features as feature nodes (no `max_feature_nodes` truncation),
+    so the rank denominator is the complete active-feature set rather than the
+    global-influence top-K -- strictly more complete for "rank among the node's direct
+    input features".
+
+    Returns None if `target_token` is not a single token (matches `node_input_all`).
+    """
+    import torch
+    from circuit_tracer.attribution.targets import AttributionTargets
+
+    ids = model.tokenizer.encode(target_token, add_special_tokens=False)
+    if len(ids) != 1:
+        return None
+
+    input_ids = model.ensure_tokenized(prompt)
+    ctx = model.setup_attribution(input_ids)
+    # Forward at batch width 1 (we have exactly one logit target), caching residuals.
+    with ctx.install_hooks(model):
+        residual = model.forward(input_ids.expand(1, -1), stop_at_layer=model.cfg.n_layers)
+        ctx._resid_activations[-1] = model.ln_final(residual)
+    targets = AttributionTargets(attribution_targets=[target_token], logits=ctx.logits[0, -1],
+                                 unembed_proj=model.unembed.W_U, tokenizer=model.tokenizer)
+    n_layers = model.cfg.n_layers
+    n_pos = ctx.activation_matrix.shape[1]
+    # One backward pass -> the single logit node's incoming-edge row, laid out as
+    # [features (nnz) | error (n_layers*n_pos, layer-major) | tokens (n_pos)] -- the same
+    # column order node_input_all decodes from the full adjacency. The error and token
+    # columns are populated by this same pass (error_hooks/token_hook fire alongside the
+    # feature hooks), so the MLP-error and token inputs are captured in full.
+    row = ctx.compute_batch(
+        layers=torch.full((1,), n_layers),
+        positions=torch.full((1,), n_pos - 1),
+        inject_values=targets.logit_vectors.to(ctx.encoder_vecs.dtype),
+        retain_graph=False,
+    )[0].cpu()
+
+    nnz = ctx.activation_matrix._nnz()
+    active = ctx.activation_matrix.indices().T.tolist()   # (nnz, 3) = (layer, pos, fidx)
+    fv = row[:nnz].tolist()
+    features = [{"layer": int(active[i][0]), "pos": int(active[i][1]),
+                 "fidx": int(active[i][2]), "edge": round(float(fv[i]), 6)}
+                for i in range(nnz)]
+    errors = []
+    for jp, w in enumerate(row[nnz:nnz + n_layers * n_pos].tolist()):
+        layer, pos = divmod(jp, n_pos)
+        errors.append({"layer": layer, "pos": pos, "edge": round(float(w), 6)})
+    tokens = [{"pos": pos, "edge": round(float(w), 6)}
+              for pos, w in enumerate(row[nnz + n_layers * n_pos:].tolist())]
+    return {"features": features, "errors": errors, "tokens": tokens}
+
+
 def _name_in_vocab(ct, name):
     try:
         ct.encode(name)
