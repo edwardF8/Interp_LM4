@@ -39,7 +39,7 @@ MODEL_DIR="${MODEL_DIR:-$REMOTE_BASE/runResults/bioS_N-Bd_final_grid/20260520-13
 CLT_DIR="${CLT_DIR:-$REMOTE_BASE/clt_runs/grid-L4-H6/sweep-cfbp6man/mult16_l02_lr0.0001_ep50_n10000/final}"
 DATA_DIR="${DATA_DIR:-$REMOTE_BASE/Data/bioS_N-Bd_final_grid}"
 SCAN_NAME="${SCAN_NAME:-grid-L4-H6}"
-CONDA_ENV="${CONDA_ENV:-lm4}"
+CONDA_ENV="${CONDA_ENV:-lm4-ct}"   # dedicated circuit-tracer env (see scripts/setup_ct_env_psc.sh)
 NUM_SHARDS="${NUM_SHARDS:-16}"     # MUST equal the --array size (default --array=0-15)
 BATCH_SIZE="${BATCH_SIZE:-1024}"   # bigger batch fills the GPU
 EXTRA_ARGS="${EXTRA_ARGS:-}"       # e.g. "--templates 0,5,12" or "--limit-people 500" or "--months August"
