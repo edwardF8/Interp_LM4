@@ -142,7 +142,9 @@ def main():
     ap.add_argument("--pos-span-flag", type=int, default=3)
     ap.add_argument("--rank-by-abs", action="store_true")
     ap.add_argument("--no-token-nodes", action="store_true")
-    ap.add_argument("--limit-people", type=int, default=None, help="cap people/month (smoke test)")
+    ap.add_argument("--limit-people", type=int, default=None,
+                    help="cap people/month: a SEEDED RANDOM sample (not first-N)")
+    ap.add_argument("--seed", type=int, default=0, help="RNG seed for --limit-people sampling")
     ap.add_argument("--progress-every", type=int, default=200)
     ap.add_argument("--skip-existing", action="store_true", default=True)
     ap.add_argument("--no-skip-existing", dest="skip_existing", action="store_false")
@@ -172,12 +174,14 @@ def main():
     ct = CondensedTokenizer.from_remap_path(DATA_DIR / "old_to_new.json")
     sampler = BioSampler(DATA_DIR / "people.json", fields=("birthday",))
 
-    # Deterministic global work list, then this shard's stride slice.
+    # Per-month pool (all people, or a seeded random subset if --limit-people),
+    # then the global work list, then this shard's stride slice. sample_people uses
+    # the same seed on every shard, so all shards agree on the subset before striding;
+    # it returns the full pool unchanged when limit is None or >= the pool size.
     work, pools = [], {}
     for m in months:
-        pool = wf.people_in_month(sampler, ct, m)
-        if args.limit_people is not None:
-            pool = pool[:args.limit_people]
+        pool = wf.sample_people(wf.people_in_month(sampler, ct, m),
+                                args.limit_people, args.seed)
         pools[m] = pool
         work += [(m, ds_idx, person) for ds_idx, person in pool]
     shard = work[args.shard_index::args.num_shards]
