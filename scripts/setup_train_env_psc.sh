@@ -37,10 +37,15 @@ echo "env: ${CONDA_DEFAULT_ENV:-none}   python: $PYBIN"
 python -m pip install -q -U pip uv
 echo "uv: $(uv --version)"
 
-# ---- lean training deps (pins from the last good run) ----------------------
+# ---- lean training deps ----------------------------------------------------
 # torch is the big one; uv will reuse a cached wheel if lm4-ct already pulled it.
 # Add --index-url https://download.pytorch.org/whl/cu124 if the default resolve
 # grabs the wrong CUDA build for the PSC driver.
+#
+# Only the top-level frameworks are pinned. numpy and the HuggingFace transitive
+# pkgs are intentionally LEFT UNPINNED: on Python <3.12, transformer-lens caps
+# numpy<2, so pinning numpy==2.4.4 (which only the py3.12 freeze used) makes the
+# resolve unsatisfiable. Let the resolver pick compatible versions.
 echo "=== uv pip install training deps ==="
 uv pip install --python "$PYBIN" \
     "torch==2.12.0" \
@@ -48,11 +53,8 @@ uv pip install --python "$PYBIN" \
     "transformers==4.56.2" \
     "safetensors==0.4.5" \
     "wandb==0.27.0" \
-    "numpy==2.4.4" \
     "datasets==3.6.0" \
-    "einops==0.8.2" \
-    "tokenizers==0.22.2" \
-    "huggingface_hub==0.36.2"
+    "einops==0.8.2"
 
 # ---- import gate (mirrors train_clt_psc.sh preflight) ----------------------
 echo "=== import gate ==="
