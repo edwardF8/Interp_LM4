@@ -62,6 +62,7 @@ for m in "${MODELS[@]}"; do
     EPOCHS="$EPOCHS" \
     N_EXAMPLES="$N_EXAMPLES" \
     sbatch \
+        --export=ALL \
         --job-name="clt-grid-$m" \
         --array="0-$last%$MAX_CONCURRENT" \
         --time="${TIME[$m]}" \
