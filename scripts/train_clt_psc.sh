@@ -78,7 +78,7 @@ if [ -n "${SLURM_ARRAY_TASK_ID:-}" ] && [ -n "${GRID_EXPANSION:-}" ]; then
 fi
 
 # --- environment ------------------------------------------------------------
-CONDA_ENV="lm4"
+CONDA_ENV="${CONDA_ENV:-lm4}"   # overridable, like the other *_psc scripts
 
 # ############################################################################
 # ###  machinery below — you shouldn't need to touch this  ###################
