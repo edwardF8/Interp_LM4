@@ -36,26 +36,46 @@ ENC_HOOK="blocks.{layer}.hook_resid_mid"   # encoder input
 DEC_HOOK="blocks.{layer}.hook_mlp_out"     # decoder target
 
 # --- mode: pick ONE of the two sections below -------------------------------
-SWEEP=1       # 0 = single run (SECTION A) ; 1 = wandb grid sweep (SECTION B)
-CONTEXT_SIZE=512    # (applies to both)
+SWEEP="${SWEEP:-1}"   # 0 = single run (SECTION A) ; 1 = wandb grid sweep (SECTION B)
+CONTEXT_SIZE="${CONTEXT_SIZE:-512}"    # (applies to both)
 
 # === SECTION A: single-run hyperparameters (used when SWEEP=0) ===============
-N_EXAMPLES=1000     # 1000 = quick test; 10000 = full
-EPOCHS=20           # 3 = quick test; 30 = full
-EXPANSION=16        # d_transcoder = EXPANSION * d_model
-L0=5.0              # sparsity (L0) coefficient
-LR=5e-5             # learning rate
+# Env-overridable so a driver can submit single runs, incl. SLURM-array grids.
+N_EXAMPLES="${N_EXAMPLES:-1000}"     # 1000 = quick test; 10000 = full
+EPOCHS="${EPOCHS:-20}"               # 3 = quick test; 30 = full
+EXPANSION="${EXPANSION:-16}"         # d_transcoder = EXPANSION * d_model
+L0="${L0:-5.0}"                      # sparsity (L0) coefficient
+LR="${LR:-5e-5}"                     # learning rate
 
 # === SECTION B: sweep grid (used when SWEEP=1) ==============================
 # OVERRIDE_SWEEP=0 -> run the baked-in grid (expansion {4,8,16,32} x l0 {1,2,5},
 # lr 1e-4, n_examples 50000, epochs 10) and IGNORE the values below.
 # OVERRIDE_SWEEP=1 -> use the values below. Lists are space-separated.
-OVERRIDE_SWEEP=0
-SWEEP_EXPANSION="4 8 16 32"
-SWEEP_L0="1 2 5"
-SWEEP_LR=1e-4
-SWEEP_N_EXAMPLES=20000
-SWEEP_EPOCHS=20
+# Each is env-overridable so a driver (submit_clt_sweeps_grid.sh) can set a
+# per-model grid without editing this file.
+OVERRIDE_SWEEP="${OVERRIDE_SWEEP:-0}"
+SWEEP_EXPANSION="${SWEEP_EXPANSION:-4 8 16 32}"
+SWEEP_L0="${SWEEP_L0:-1 2 5}"
+SWEEP_LR="${SWEEP_LR:-1e-4}"
+SWEEP_N_EXAMPLES="${SWEEP_N_EXAMPLES:-20000}"
+SWEEP_EPOCHS="${SWEEP_EPOCHS:-20}"
+
+# === SLURM array mode: one task per (expansion, l0) grid point ==============
+# A driver can submit `sbatch --array=0-N ... GRID_EXPANSION=".." GRID_L0=".."`
+# to run a grid as concurrent SINGLE runs (no wandb sweep). Each task derives its
+# own (expansion, l0) from SLURM_ARRAY_TASK_ID, iterating expansion-major
+# (i -> EXP[i / nL0], L0[i % nL0]). Forces SWEEP=0 and groups the runs in wandb.
+if [ -n "${SLURM_ARRAY_TASK_ID:-}" ] && [ -n "${GRID_EXPANSION:-}" ]; then
+    read -r -a _EXPS <<< "$GRID_EXPANSION"
+    read -r -a _L0S  <<< "${GRID_L0:?GRID_L0 required alongside GRID_EXPANSION}"
+    _nL0=${#_L0S[@]}
+    _i=$SLURM_ARRAY_TASK_ID
+    EXPANSION="${_EXPS[$(( _i / _nL0 ))]}"
+    L0="${_L0S[$(( _i % _nL0 ))]}"
+    SWEEP=0
+    export WANDB_RUN_GROUP="grid-array-$MODEL_NAME"
+    echo "array task $_i -> expansion=$EXPANSION l0=$L0 (wandb group=$WANDB_RUN_GROUP)"
+fi
 
 # --- environment ------------------------------------------------------------
 CONDA_ENV="lm4"
@@ -105,11 +125,10 @@ for p in "$MODEL_DIR/config.json" "$DATA_DIR/people.json" "$DATA_DIR/old_to_new.
          clts/trainCLT.py; do
     [ -e "$p" ] || { echo "  MISSING: $p" >&2; fail=1; }
 done
-if [ "$SWEEP" = 1 ]; then
-    if ! grep -q "api.wandb.ai" "${HOME}/.netrc" 2>/dev/null && [ -z "${WANDB_API_KEY:-}" ]; then
-        echo "  wandb not authenticated: run \`wandb login\`, or set WANDB_API_KEY" >&2
-        fail=1
-    fi
+# trainCLT.py always calls wandb.init (sweeps AND single runs), so always check.
+if ! grep -q "api.wandb.ai" "${HOME}/.netrc" 2>/dev/null && [ -z "${WANDB_API_KEY:-}" ]; then
+    echo "  wandb not authenticated: run \`wandb login\`, or set WANDB_API_KEY" >&2
+    fail=1
 fi
 python - "$MODEL_DIR" <<'PY' || fail=1
 import sys, json
