@@ -49,6 +49,10 @@ cd "${SLURM_SUBMIT_DIR:-$(pwd)}"
 mkdir -p logs
 
 # ---- environment (mirrors Training_On_LM4/setup_job_psc.sh) ----------------
+# Don't trust conda's active-env state inherited from the submitting shell: an
+# active env leaks CONDA_SHLVL/CONDA_PREFIX via --export=ALL, and the conda
+# deactivate below then chokes ("Run 'conda init' before 'conda deactivate'").
+unset CONDA_SHLVL CONDA_PREFIX CONDA_PREFIX_1 CONDA_PREFIX_2 CONDA_DEFAULT_ENV CONDA_PROMPT_MODIFIER
 module purge
 module load cuda
 module load anaconda3

@@ -101,6 +101,9 @@ fi
 cd "${SLURM_SUBMIT_DIR:-$(pwd)}"
 mkdir -p logs
 
+# Don't trust conda's active-env state inherited from the submit shell (leaks via
+# --export=ALL and breaks the conda deactivate below).
+unset CONDA_SHLVL CONDA_PREFIX CONDA_PREFIX_1 CONDA_PREFIX_2 CONDA_DEFAULT_ENV CONDA_PROMPT_MODIFIER
 module purge
 module load cuda
 module load anaconda3
