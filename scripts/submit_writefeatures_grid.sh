@@ -40,13 +40,16 @@ cd "$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 mkdir -p logs
 export PYTHONPATH="$(pwd)${PYTHONPATH:+:$PYTHONPATH}"
 
-# conda needed on THIS login node to query wandb for the CLT dirs.
+# IMPORTANT: do NOT `conda activate` in this (submitting) shell -- with sbatch
+# --export=ALL the CONDA_* vars leak into the job and break its own conda setup.
+# Resolve CLT dirs inside the env via a subshell instead.
 module load anaconda3 2>/dev/null || true
-eval "$(conda shell.bash hook 2>/dev/null)" || {
-    _base="$(conda info --base 2>/dev/null)"
-    [ -n "$_base" ] && [ -f "$_base/etc/profile.d/conda.sh" ] && source "$_base/etc/profile.d/conda.sh"
+resolve_clt() {  # $1 = wandb run name -> prints storage_path (CLT dir) on stdout
+    ( eval "$(conda shell.bash hook 2>/dev/null)" \
+        || { _b=$(conda info --base 2>/dev/null); [ -n "$_b" ] && . "$_b/etc/profile.d/conda.sh"; }
+      conda activate "$CONDA_ENV" 1>&2
+      python clts/resolve_clt_run.py "$1" )
 }
-conda activate "$CONDA_ENV"
 
 for pair in "${MODELS[@]}"; do
     model="${pair%%:*}"
@@ -55,7 +58,7 @@ for pair in "${MODELS[@]}"; do
     model_dir="$GRID/$model/final"
 
     echo "=== $model ($run): resolving CLT dir from wandb ==="
-    if ! clt_dir="$(python clts/resolve_clt_run.py "$run")"; then
+    if ! clt_dir="$(resolve_clt "$run")"; then
         echo "  !! could not resolve $run -- skipping $model" >&2
         continue
     fi

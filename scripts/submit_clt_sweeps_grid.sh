@@ -57,13 +57,16 @@ mkdir -p logs
 export CLT_STORAGE_ROOT="$REMOTE_BASE"
 export PYTHONPATH="$(pwd)${PYTHONPATH:+:$PYTHONPATH}"
 
-# conda is needed on THIS login node to register the sweeps (no GPU required).
+# IMPORTANT: do NOT `conda activate` in this (submitting) shell -- with sbatch
+# --export=ALL the CONDA_* vars leak into the agent jobs and break their own conda
+# setup. Register sweeps inside the env via a subshell instead.
 module load anaconda3 2>/dev/null || true
-eval "$(conda shell.bash hook 2>/dev/null)" || {
-    _base="$(conda info --base 2>/dev/null)"
-    [ -n "$_base" ] && [ -f "$_base/etc/profile.d/conda.sh" ] && source "$_base/etc/profile.d/conda.sh"
+run_in_env() {  # run "$@" inside $CONDA_ENV in a subshell (keeps submit env clean)
+    ( eval "$(conda shell.bash hook 2>/dev/null)" \
+        || { _b=$(conda info --base 2>/dev/null); [ -n "$_b" ] && . "$_b/etc/profile.d/conda.sh"; }
+      conda activate "$CONDA_ENV" 1>&2
+      "$@" )
 }
-conda activate "$CONDA_ENV"
 
 for m in "${MODELS[@]}"; do
     read -r -a _e <<< "${EXPANSION[$m]}"
@@ -72,12 +75,9 @@ for m in "${MODELS[@]}"; do
     last=$(( n - 1 ))
 
     echo "=== $m: registering wandb sweep (expansion=[${EXPANSION[$m]}] x l0=[${L0[$m]}] -> $n trials) ==="
-    SWEEP_ID=$(CLT_SWEEP_EXPANSION="${EXPANSION[$m]}" \
-               CLT_SWEEP_L0="${L0[$m]}" \
-               CLT_SWEEP_LR="$LR" \
-               CLT_SWEEP_N_EXAMPLES="$N_EXAMPLES" \
-               CLT_SWEEP_EPOCHS="$EPOCHS" \
-               python clts/trainCLT.py --create-sweep \
+    export CLT_SWEEP_EXPANSION="${EXPANSION[$m]}" CLT_SWEEP_L0="${L0[$m]}" \
+           CLT_SWEEP_LR="$LR" CLT_SWEEP_N_EXAMPLES="$N_EXAMPLES" CLT_SWEEP_EPOCHS="$EPOCHS"
+    SWEEP_ID=$(run_in_env python clts/trainCLT.py --create-sweep \
                    --model-dir "$GRID/$m/final" --data-dir "$DATA_DIR" --model-name "$m" \
                | sed -n 's/^SWEEP_ID=//p')
     if [ -z "${SWEEP_ID:-}" ]; then
