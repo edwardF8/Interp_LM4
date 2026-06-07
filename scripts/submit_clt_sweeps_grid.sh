@@ -64,10 +64,13 @@ module load anaconda3 2>/dev/null || true
 # Scrub any conda activation inherited from the submitting shell (e.g. an active
 # (lm4-ct) prompt) so sbatch --export=ALL can't leak CONDA_* into jobs and break
 # their conda init. CONDA_ENV is OURS (not conda's) -- keep it.
+# Unset only the ACTIVATION-STATE vars (keep CONDA_EXE etc., which conda's own
+# init scripts need) so they don't leak into jobs via --export=ALL.
 unset CONDA_PREFIX CONDA_PREFIX_1 CONDA_PREFIX_2 CONDA_DEFAULT_ENV CONDA_SHLVL \
-      CONDA_PROMPT_MODIFIER CONDA_EXE CONDA_PYTHON_EXE _CE_CONDA _CE_M 2>/dev/null || true
+      CONDA_PROMPT_MODIFIER 2>/dev/null || true
 run_in_env() {  # run "$@" inside $CONDA_ENV in a subshell (keeps submit env clean)
-    ( eval "$(conda shell.bash hook 2>/dev/null)" \
+    ( set +u                       # conda's init scripts aren't nounset-safe
+      eval "$(conda shell.bash hook 2>/dev/null)" \
         || { _b=$(conda info --base 2>/dev/null); [ -n "$_b" ] && . "$_b/etc/profile.d/conda.sh"; }
       conda activate "$CONDA_ENV" 1>&2
       "$@" )

@@ -27,6 +27,13 @@ def main():
                     help="summary key (default) or config key to print")
     args = ap.parse_args()
 
+    # Don't let a repo-local ./wandb/ run-log dir (created by training runs)
+    # shadow the installed wandb package when run from the repo root / PYTHONPATH=.
+    import os
+    _drop = {os.path.abspath(p) for p in
+             (os.getcwd(), os.path.dirname(os.path.dirname(os.path.abspath(__file__))))}
+    sys.path[:] = [p for p in sys.path if p and os.path.abspath(p) not in _drop]
+
     import wandb
     api = wandb.Api()
     path = f"{args.entity + '/' if args.entity else ''}{args.project}"
