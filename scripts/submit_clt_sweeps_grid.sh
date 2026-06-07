@@ -61,6 +61,11 @@ export PYTHONPATH="$(pwd)${PYTHONPATH:+:$PYTHONPATH}"
 # --export=ALL the CONDA_* vars leak into the agent jobs and break their own conda
 # setup. Register sweeps inside the env via a subshell instead.
 module load anaconda3 2>/dev/null || true
+# Scrub any conda activation inherited from the submitting shell (e.g. an active
+# (lm4-ct) prompt) so sbatch --export=ALL can't leak CONDA_* into jobs and break
+# their conda init. CONDA_ENV is OURS (not conda's) -- keep it.
+unset CONDA_PREFIX CONDA_PREFIX_1 CONDA_PREFIX_2 CONDA_DEFAULT_ENV CONDA_SHLVL \
+      CONDA_PROMPT_MODIFIER CONDA_EXE CONDA_PYTHON_EXE _CE_CONDA _CE_M 2>/dev/null || true
 run_in_env() {  # run "$@" inside $CONDA_ENV in a subshell (keeps submit env clean)
     ( eval "$(conda shell.bash hook 2>/dev/null)" \
         || { _b=$(conda info --base 2>/dev/null); [ -n "$_b" ] && . "$_b/etc/profile.d/conda.sh"; }
