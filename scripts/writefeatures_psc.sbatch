@@ -51,8 +51,9 @@ mkdir -p logs
 # Use the env's Python DIRECTLY -- no `conda activate` (it breaks under SLURM:
 # "Run 'conda init' before 'conda deactivate'"). Override PY if your env is
 # elsewhere than ~/.conda/envs/$CONDA_ENV.
-module purge
-module load cuda
+# NO `module purge`: on a job from an active conda shell it unloads the inherited
+# anaconda module and fires a `conda deactivate` -> error. Just load cuda.
+module load cuda 2>/dev/null || true
 PY="${PY:-$HOME/.conda/envs/$CONDA_ENV/bin/python}"
 [ -x "$PY" ] || { echo "ERROR: no python at $PY (is conda env '$CONDA_ENV' created?)" >&2; exit 1; }
 echo "python: $PY"
