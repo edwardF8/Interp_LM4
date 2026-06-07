@@ -305,7 +305,7 @@ def _env_num(name: str, default, cast=float):
     return cast(raw) if raw else default
 
 
-def build_sweep_config() -> dict:
+def build_sweep_config(model_name: str | None = None) -> dict:
     # Broader stage-1 sweep (see docs/superpowers/specs/2026-05-31-broader-clt-sweep-design.md).
     # The first sweep's optimum sat in the grid corner (max expansion, min l0,
     # max lr) with poor mid-layer reconstruction (nmse_L1/L2 ~0.44/0.55 -> large
@@ -322,7 +322,7 @@ def build_sweep_config() -> dict:
     return {
         "program": "trainCLT.py",
         "method":  "grid",
-        "name":    f"clt_sweep_{ARGS.model_name}",
+        "name":    f"clt_sweep_{model_name or ARGS.model_name}",
         "metric":  {"name": "final_eval/ce_recovered", "goal": "maximize"},
         # Defaults below are the baked-in grid; each is overridable via an env
         # var (set by scripts/train_clt_psc.sh when OVERRIDE_SWEEP=1). Unset env
@@ -393,7 +393,21 @@ def parse_args() -> argparse.Namespace:
 
     p.add_argument("--sweep", action="store_true",
                    help="Launch wandb grid sweep over (expansion x l0); "
-                        "lr/n_examples/epochs are fixed in build_sweep_config.")
+                        "lr/n_examples/epochs are fixed in build_sweep_config. "
+                        "Creates the sweep AND runs an agent in this process.")
+    # --- parallel-sweep mode: split 'register' from 'run agent' so a SLURM
+    #     array can run many agents against ONE sweep (real wandb Sweep object,
+    #     trials run in parallel). See scripts/submit_clt_sweeps_grid.sh.
+    p.add_argument("--create-sweep", action="store_true",
+                   help="Register the wandb grid sweep, print 'SWEEP_ID=<id>', "
+                        "and exit. Does NOT load the model or run trials "
+                        "(cheap; safe on a login node).")
+    p.add_argument("--agent", type=str, default=None, metavar="SWEEP_ID",
+                   help="Attach an agent to an EXISTING sweep id and run trials. "
+                        "Pair with --create-sweep on a launcher process.")
+    p.add_argument("--count", type=int, default=None,
+                   help="Max trials this agent runs before exiting "
+                        "(wandb.agent count). Use --count 1 for one-trial-per-task.")
 
     return p.parse_args()
 
@@ -401,12 +415,27 @@ def parse_args() -> argparse.Namespace:
 def main():
     import wandb
     args = parse_args()
+
+    # --create-sweep: register only, no model load (cheap, login-node safe).
+    if args.create_sweep:
+        model_name = args.model_name or args.model_dir.parent.name
+        cfg = build_sweep_config(model_name=model_name)
+        sweep_id = wandb.sweep(cfg, project="interpLM4")
+        print(f"SWEEP_ID={sweep_id}")
+        return
+
     setup(args)
-    if args.sweep:
+    if args.agent:
+        # Run trials from an existing sweep (parallel-agent mode).
+        _patch_signal_for_worker_threads()
+        wandb.agent(args.agent, function=train_one_run,
+                    project="interpLM4", count=args.count)
+    elif args.sweep:
         _patch_signal_for_worker_threads()
         cfg = build_sweep_config()
         sweep_id = wandb.sweep(cfg, project="interpLM4")
         print(f"[sweep]   registered: {sweep_id}")
+        print(f"SWEEP_ID={sweep_id}")
         wandb.agent(sweep_id, function=train_one_run)
     else:
         train_one_run()

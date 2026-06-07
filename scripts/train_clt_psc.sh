@@ -142,6 +142,22 @@ PY
 [ "$fail" = 0 ] || { echo "PREFLIGHT FAILED -- not launching." >&2; exit 1; }
 echo "preflight OK"
 
+# ---- run: parallel-sweep AGENT mode ----------------------------------------
+# If AGENT_SWEEP_ID is set (by submit_clt_sweeps_grid.sh), this task is a wandb
+# agent pulling trials from an already-registered sweep. AGENT_COUNT trials, then
+# exit. Hyperparameters come from the sweep, not from EXPANSION/L0 here.
+if [ -n "${AGENT_SWEEP_ID:-}" ]; then
+    echo "=== CLT sweep AGENT on $(hostname): sweep=$AGENT_SWEEP_ID count=${AGENT_COUNT:-1} ==="
+    date; nvidia-smi || true
+    python -u clts/trainCLT.py \
+        --model-dir "$MODEL_DIR" --data-dir "$DATA_DIR" --model-name "$MODEL_NAME" \
+        --enc-hook-template "$ENC_HOOK" --dec-hook-template "$DEC_HOOK" \
+        --agent "$AGENT_SWEEP_ID" --count "${AGENT_COUNT:-1}"
+    echo "Finished agent: $(date)"
+    echo "Sweep runs under: $CLT_STORAGE_ROOT/clt_runs/$MODEL_NAME/sweep-$AGENT_SWEEP_ID/"
+    exit 0
+fi
+
 # ---- run -------------------------------------------------------------------
 mode="single run"; [ "$SWEEP" = 1 ] && mode="sweep (expansion x l0)"
 echo "=== CLT $mode on $(hostname) ==="
