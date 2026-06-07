@@ -18,7 +18,7 @@
 #
 set -euo pipefail
 
-CONDA_ENV="${CONDA_ENV:-lm4-ct}"     # gen_dashboards_psc.sbatch still defaults to deleted lm4
+CONDA_ENV="${CONDA_ENV:-lm4}"        # training+dashboards env; circuit_tracer NOT needed here
 REMOTE_BASE="${REMOTE_BASE:-/jet/home/friedmae/data_storage/LM4_Results}"
 GRID="$REMOTE_BASE/runResults/bioS_N-Bd_final_grid/20260520-134455/grid"
 DATA_DIR="$REMOTE_BASE/Data/bioS_N-Bd_final_grid"
