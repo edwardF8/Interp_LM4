@@ -49,20 +49,20 @@ cd "${SLURM_SUBMIT_DIR:-$(pwd)}"
 mkdir -p logs
 
 # ---- environment (mirrors Training_On_LM4/setup_job_psc.sh) ----------------
-# Don't trust conda's active-env state inherited from the submitting shell: an
-# active env leaks CONDA_SHLVL/CONDA_PREFIX via --export=ALL, and the conda
-# deactivate below then chokes ("Run 'conda init' before 'conda deactivate'").
-unset CONDA_SHLVL CONDA_PREFIX CONDA_PREFIX_1 CONDA_PREFIX_2 CONDA_DEFAULT_ENV CONDA_PROMPT_MODIFIER
 module purge
 module load cuda
 module load anaconda3
-# module load puts conda on PATH but does NOT define the `conda` shell function:
+# module load puts conda on PATH but does NOT define the `conda` shell function.
+# set +u: conda's init scripts aren't nounset-safe. No `conda deactivate` -- it
+# errors when the submit shell had an env active, and activating directly is fine
+# (this matches the original working version of this script).
+set +u
 eval "$(conda shell.bash hook 2>/dev/null)" || {
     _base="$(conda info --base 2>/dev/null)"
     [ -n "$_base" ] && [ -f "$_base/etc/profile.d/conda.sh" ] && source "$_base/etc/profile.d/conda.sh"
 }
-conda deactivate 2>/dev/null || true     # drop any env inherited from the submit shell
 conda activate "$CONDA_ENV"
+set -u
 echo "env: ${CONDA_DEFAULT_ENV:-none}   python: $(which python)"
 export PYTHONUNBUFFERED=1
 

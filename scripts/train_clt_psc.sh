@@ -101,18 +101,18 @@ fi
 cd "${SLURM_SUBMIT_DIR:-$(pwd)}"
 mkdir -p logs
 
-# Don't trust conda's active-env state inherited from the submit shell (leaks via
-# --export=ALL and breaks the conda deactivate below).
-unset CONDA_SHLVL CONDA_PREFIX CONDA_PREFIX_1 CONDA_PREFIX_2 CONDA_DEFAULT_ENV CONDA_PROMPT_MODIFIER
 module purge
 module load cuda
 module load anaconda3
+# set +u: conda's init scripts aren't nounset-safe. No `conda deactivate` -- it
+# errors when the submit shell had an env active; activating directly is fine.
+set +u
 eval "$(conda shell.bash hook 2>/dev/null)" || {
     _base="$(conda info --base 2>/dev/null)"
     [ -n "$_base" ] && [ -f "$_base/etc/profile.d/conda.sh" ] && source "$_base/etc/profile.d/conda.sh"
 }
-conda deactivate 2>/dev/null || true
 conda activate "$CONDA_ENV"
+set -u
 echo "env: ${CONDA_DEFAULT_ENV:-none}   python: $(which python)"
 export PYTHONUNBUFFERED=1
 export PYTHONPATH="${SLURM_SUBMIT_DIR:-$(pwd)}${PYTHONPATH:+:$PYTHONPATH}"
