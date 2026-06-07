@@ -24,6 +24,7 @@ GRID="$REMOTE_BASE/runResults/bioS_N-Bd_final_grid/20260520-134455/grid"
 DATA_DIR="$REMOTE_BASE/Data/bioS_N-Bd_final_grid"
 FEATURES_ROOT="${FEATURES_ROOT:-$REMOTE_BASE/clt_features}"
 MODE="${MODE:-moderate}"             # validate | moderate | full
+TIME="${TIME:-04:00:00}"            # per-model walltime; raise for MODE=full
 
 MODELS=(
     "grid-L1-H6:happy-deluge-193"
@@ -63,6 +64,7 @@ for pair in "${MODELS[@]}"; do
     aid=$(sbatch --parsable \
         --export=ALL,REMOTE_BASE="$REMOTE_BASE",MODEL_DIR="$model_dir",CLT_DIR="$clt_dir",DATA_DIR="$DATA_DIR",SCAN_NAME="$model",FEATURES_ROOT="$FEATURES_ROOT",CONDA_ENV="$CONDA_ENV" \
         --job-name="dash-$model" \
+        --time="$TIME" \
         scripts/gen_dashboards_psc.sbatch "$MODE")
     echo "  dashboards job: $aid"
 done
