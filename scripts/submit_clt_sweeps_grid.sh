@@ -57,24 +57,10 @@ mkdir -p logs
 export CLT_STORAGE_ROOT="$REMOTE_BASE"
 export PYTHONPATH="$(pwd)${PYTHONPATH:+:$PYTHONPATH}"
 
-# IMPORTANT: do NOT `conda activate` in this (submitting) shell -- with sbatch
-# --export=ALL the CONDA_* vars leak into the agent jobs and break their own conda
-# setup. Register sweeps inside the env via a subshell instead.
-module load anaconda3 2>/dev/null || true
-# Scrub any conda activation inherited from the submitting shell (e.g. an active
-# (lm4-ct) prompt) so sbatch --export=ALL can't leak CONDA_* into jobs and break
-# their conda init. CONDA_ENV is OURS (not conda's) -- keep it.
-# Unset only the ACTIVATION-STATE vars (keep CONDA_EXE etc., which conda's own
-# init scripts need) so they don't leak into jobs via --export=ALL.
-unset CONDA_PREFIX CONDA_PREFIX_1 CONDA_PREFIX_2 CONDA_DEFAULT_ENV CONDA_SHLVL \
-      CONDA_PROMPT_MODIFIER 2>/dev/null || true
-run_in_env() {  # run "$@" inside $CONDA_ENV in a subshell (keeps submit env clean)
-    ( set +u                       # conda's init scripts aren't nounset-safe
-      eval "$(conda shell.bash hook 2>/dev/null)" \
-        || { _b=$(conda info --base 2>/dev/null); [ -n "$_b" ] && . "$_b/etc/profile.d/conda.sh"; }
-      conda activate "$CONDA_ENV" 1>&2
-      "$@" )
-}
+# Register sweeps with the env's Python DIRECTLY -- no conda activation on the
+# login node (which is what kept leaking into / breaking the jobs).
+PY="${PY:-$HOME/.conda/envs/$CONDA_ENV/bin/python}"
+[ -x "$PY" ] || { echo "ERROR: no python at $PY (is conda env '$CONDA_ENV' created?)" >&2; exit 1; }
 
 for m in "${MODELS[@]}"; do
     read -r -a _e <<< "${EXPANSION[$m]}"
@@ -85,7 +71,7 @@ for m in "${MODELS[@]}"; do
     echo "=== $m: registering wandb sweep (expansion=[${EXPANSION[$m]}] x l0=[${L0[$m]}] -> $n trials) ==="
     export CLT_SWEEP_EXPANSION="${EXPANSION[$m]}" CLT_SWEEP_L0="${L0[$m]}" \
            CLT_SWEEP_LR="$LR" CLT_SWEEP_N_EXAMPLES="$N_EXAMPLES" CLT_SWEEP_EPOCHS="$EPOCHS"
-    SWEEP_ID=$(run_in_env python clts/trainCLT.py --create-sweep \
+    SWEEP_ID=$("$PY" clts/trainCLT.py --create-sweep \
                    --model-dir "$GRID/$m/final" --data-dir "$DATA_DIR" --model-name "$m" \
                | sed -n 's/^SWEEP_ID=//p')
     if [ -z "${SWEEP_ID:-}" ]; then

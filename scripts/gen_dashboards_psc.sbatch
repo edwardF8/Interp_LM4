@@ -48,22 +48,16 @@ esac
 cd "${SLURM_SUBMIT_DIR:-$(pwd)}"
 mkdir -p logs
 
-# ---- environment (mirrors Training_On_LM4/setup_job_psc.sh) ----------------
+# ---- environment -----------------------------------------------------------
+# Use the env's Python DIRECTLY. No `conda activate`: the activate/deactivate
+# shell dance breaks under SLURM ("Run 'conda init' before 'conda deactivate'"),
+# but the env's python runs its packages fine on its own. Override PY if your
+# env lives somewhere other than ~/.conda/envs/$CONDA_ENV.
 module purge
 module load cuda
-module load anaconda3
-# module load puts conda on PATH but does NOT define the `conda` shell function.
-# set +u: conda's init scripts aren't nounset-safe. No `conda deactivate` -- it
-# errors when the submit shell had an env active, and activating directly is fine
-# (this matches the original working version of this script).
-set +u
-eval "$(conda shell.bash hook 2>/dev/null)" || {
-    _base="$(conda info --base 2>/dev/null)"
-    [ -n "$_base" ] && [ -f "$_base/etc/profile.d/conda.sh" ] && source "$_base/etc/profile.d/conda.sh"
-}
-conda activate "$CONDA_ENV"
-set -u
-echo "env: ${CONDA_DEFAULT_ENV:-none}   python: $(which python)"
+PY="${PY:-$HOME/.conda/envs/$CONDA_ENV/bin/python}"
+[ -x "$PY" ] || { echo "ERROR: no python at $PY (is conda env '$CONDA_ENV' created?)" >&2; exit 1; }
+echo "python: $PY"
 export PYTHONUNBUFFERED=1
 
 # ---- preflight: fail fast before the GPU-heavy pass ------------------------
@@ -74,7 +68,7 @@ for p in "$MODEL_DIR/config.json" "$CLT_DIR/config.yaml" "$CLT_DIR/W_enc_0.safet
     [ -e "$p" ] || { echo "  MISSING: $p" >&2; fail=1; }
 done
 mkdir -p "$FEATURES_ROOT/$SCAN_NAME" || { echo "  FEATURES_ROOT not writable: $FEATURES_ROOT" >&2; fail=1; }
-python - "$CLT_DIR" "$MODEL_DIR" <<'PY' || fail=1
+"$PY" - "$CLT_DIR" "$MODEL_DIR" <<'PY' || fail=1
 import sys
 for m in ("torch", "transformer_lens", "transformers", "safetensors", "numpy", "yaml"):
     __import__(m)
@@ -95,7 +89,7 @@ echo "preflight OK"
 echo "=== generating dashboards (mode=$MODE) on $(hostname) ==="
 date
 nvidia-smi || true
-python -u clts/gen_feature_dashboards.py \
+"$PY" -u clts/gen_feature_dashboards.py \
     --model-dir "$MODEL_DIR" \
     --clt-dir   "$CLT_DIR" \
     --data-dir  "$DATA_DIR" \

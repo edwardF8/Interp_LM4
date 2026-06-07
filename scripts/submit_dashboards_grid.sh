@@ -36,25 +36,11 @@ cd "$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 mkdir -p logs
 export PYTHONPATH="$(pwd)${PYTHONPATH:+:$PYTHONPATH}"
 
-# IMPORTANT: do NOT `conda activate` in this (submitting) shell. With sbatch
-# --export=ALL an activated env's CONDA_* vars leak into the job and break ITS
-# own conda setup ("Run 'conda init' before 'conda deactivate'"). Instead resolve
-# CLT dirs inside the env via a subshell, leaving this shell's env clean.
-module load anaconda3 2>/dev/null || true
-# Scrub any conda activation inherited from the submitting shell (e.g. an active
-# (lm4-ct) prompt) so sbatch --export=ALL can't leak CONDA_* into jobs and break
-# their conda init. CONDA_ENV is OURS (not conda's) -- keep it.
-# Unset only the ACTIVATION-STATE vars (keep CONDA_EXE etc., which conda's own
-# init scripts need) so they don't leak into jobs via --export=ALL.
-unset CONDA_PREFIX CONDA_PREFIX_1 CONDA_PREFIX_2 CONDA_DEFAULT_ENV CONDA_SHLVL \
-      CONDA_PROMPT_MODIFIER 2>/dev/null || true
-resolve_clt() {  # $1 = wandb run name -> prints storage_path (CLT dir) on stdout
-    ( set +u                       # conda's init scripts aren't nounset-safe
-      eval "$(conda shell.bash hook 2>/dev/null)" \
-        || { _b=$(conda info --base 2>/dev/null); [ -n "$_b" ] && . "$_b/etc/profile.d/conda.sh"; }
-      conda activate "$CONDA_ENV" 1>&2
-      python clts/resolve_clt_run.py "$1" )
-}
+# Resolve CLT dirs with the env's Python DIRECTLY -- no conda activation on the
+# login node (which is what kept leaking into / breaking the jobs).
+PY="${PY:-$HOME/.conda/envs/$CONDA_ENV/bin/python}"
+[ -x "$PY" ] || { echo "ERROR: no python at $PY (is conda env '$CONDA_ENV' created?)" >&2; exit 1; }
+resolve_clt() { "$PY" clts/resolve_clt_run.py "$1"; }
 
 for pair in "${MODELS[@]}"; do
     model="${pair%%:*}"

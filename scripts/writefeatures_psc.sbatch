@@ -48,19 +48,14 @@ cd "${SLURM_SUBMIT_DIR:-$(pwd)}"
 mkdir -p logs
 
 # ---- environment (mirrors gen_dashboards_psc.sbatch) -----------------------
+# Use the env's Python DIRECTLY -- no `conda activate` (it breaks under SLURM:
+# "Run 'conda init' before 'conda deactivate'"). Override PY if your env is
+# elsewhere than ~/.conda/envs/$CONDA_ENV.
 module purge
 module load cuda
-module load anaconda3
-# set +u: conda's init scripts aren't nounset-safe. No `conda deactivate` -- it
-# errors when the submit shell had an env active; activating directly is fine.
-set +u
-eval "$(conda shell.bash hook 2>/dev/null)" || {
-    _base="$(conda info --base 2>/dev/null)"
-    [ -n "$_base" ] && [ -f "$_base/etc/profile.d/conda.sh" ] && source "$_base/etc/profile.d/conda.sh"
-}
-conda activate "$CONDA_ENV"
-set -u
-echo "env: ${CONDA_DEFAULT_ENV:-none}   python: $(which python)"
+PY="${PY:-$HOME/.conda/envs/$CONDA_ENV/bin/python}"
+[ -x "$PY" ] || { echo "ERROR: no python at $PY (is conda env '$CONDA_ENV' created?)" >&2; exit 1; }
+echo "python: $PY"
 export PYTHONUNBUFFERED=1
 export PYTHONPATH="${SLURM_SUBMIT_DIR:-$(pwd)}${PYTHONPATH:+:$PYTHONPATH}"
 
@@ -74,7 +69,7 @@ done
 echo "  model:   $MODEL_DIR"
 echo "  clt:     $CLT_DIR"
 echo "  dataset: $DATA_DIR"
-python - <<'PY' || fail=1
+"$PY" - <<'PY' || fail=1
 import torch
 import clts.writefeatures as wf
 print(f"  torch {torch.__version__}  cuda={torch.cuda.is_available()}")
@@ -88,7 +83,7 @@ SHARD="${SLURM_ARRAY_TASK_ID:-${SHARD:-0}}"
 echo "=== writeFeatures sweep: shard $SHARD/$NUM_SHARDS on $(hostname) ==="
 date
 nvidia-smi || true
-python -u clts/run_writefeatures_hpc.py \
+"$PY" -u clts/run_writefeatures_hpc.py \
     --model-dir "$MODEL_DIR" \
     --clt-dir   "$CLT_DIR" \
     --data-dir  "$DATA_DIR" \

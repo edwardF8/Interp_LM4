@@ -101,19 +101,14 @@ fi
 cd "${SLURM_SUBMIT_DIR:-$(pwd)}"
 mkdir -p logs
 
+# Use the env's Python DIRECTLY -- no `conda activate` (it breaks under SLURM:
+# "Run 'conda init' before 'conda deactivate'"). Override PY if your env is
+# elsewhere than ~/.conda/envs/$CONDA_ENV.
 module purge
 module load cuda
-module load anaconda3
-# set +u: conda's init scripts aren't nounset-safe. No `conda deactivate` -- it
-# errors when the submit shell had an env active; activating directly is fine.
-set +u
-eval "$(conda shell.bash hook 2>/dev/null)" || {
-    _base="$(conda info --base 2>/dev/null)"
-    [ -n "$_base" ] && [ -f "$_base/etc/profile.d/conda.sh" ] && source "$_base/etc/profile.d/conda.sh"
-}
-conda activate "$CONDA_ENV"
-set -u
-echo "env: ${CONDA_DEFAULT_ENV:-none}   python: $(which python)"
+PY="${PY:-$HOME/.conda/envs/$CONDA_ENV/bin/python}"
+[ -x "$PY" ] || { echo "ERROR: no python at $PY (is conda env '$CONDA_ENV' created?)" >&2; exit 1; }
+echo "python: $PY"
 export PYTHONUNBUFFERED=1
 export PYTHONPATH="${SLURM_SUBMIT_DIR:-$(pwd)}${PYTHONPATH:+:$PYTHONPATH}"
 if [ -n "${LOCAL:-}" ]; then
@@ -133,7 +128,7 @@ if ! grep -q "api.wandb.ai" "${HOME}/.netrc" 2>/dev/null && [ -z "${WANDB_API_KE
     echo "  wandb not authenticated: run \`wandb login\`, or set WANDB_API_KEY" >&2
     fail=1
 fi
-python - "$MODEL_DIR" <<'PY' || fail=1
+"$PY" - "$MODEL_DIR" <<'PY' || fail=1
 import sys, json
 for m in ("torch", "transformer_lens", "safetensors", "wandb"):
     __import__(m)
@@ -152,7 +147,7 @@ echo "preflight OK"
 if [ -n "${AGENT_SWEEP_ID:-}" ]; then
     echo "=== CLT sweep AGENT on $(hostname): sweep=$AGENT_SWEEP_ID count=${AGENT_COUNT:-1} ==="
     date; nvidia-smi || true
-    python -u clts/trainCLT.py \
+    "$PY" -u clts/trainCLT.py \
         --model-dir "$MODEL_DIR" --data-dir "$DATA_DIR" --model-name "$MODEL_NAME" \
         --enc-hook-template "$ENC_HOOK" --dec-hook-template "$DEC_HOOK" \
         --agent "$AGENT_SWEEP_ID" --count "${AGENT_COUNT:-1}"
@@ -168,7 +163,7 @@ echo "    enc=$ENC_HOOK  dec=$DEC_HOOK  n_examples=$N_EXAMPLES  epochs=$EPOCHS"
 date
 nvidia-smi || true
 
-cmd=(python -u clts/trainCLT.py
+cmd=("$PY" -u clts/trainCLT.py
     --model-dir "$MODEL_DIR"
     --data-dir  "$DATA_DIR"
     --model-name "$MODEL_NAME"
