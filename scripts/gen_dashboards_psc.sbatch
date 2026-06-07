@@ -59,6 +59,7 @@ PY="${PY:-$HOME/.conda/envs/$CONDA_ENV/bin/python}"
 [ -x "$PY" ] || { echo "ERROR: no python at $PY (is conda env '$CONDA_ENV' created?)" >&2; exit 1; }
 echo "python: $PY"
 export PYTHONUNBUFFERED=1
+export PYTHONPATH="${SLURM_SUBMIT_DIR:-$(pwd)}${PYTHONPATH:+:$PYTHONPATH}"
 
 # ---- preflight: fail fast before the GPU-heavy pass ------------------------
 echo "=== preflight ==="
