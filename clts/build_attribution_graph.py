@@ -73,6 +73,45 @@ def _graph_quality_metrics(graph) -> dict:
     }
 
 
+def _identity(bi):
+    """Path-independent identity of a build. Ignores the absolute model/clt/data
+    dirs — those change when artifacts are relocated (e.g. moving the CLT into
+    clt_storage/), which would otherwise read as a 'changed graph' and wipe the
+    saved viewer layout (pins/supernodes/feature labels). The prompt, target and
+    pruning knobs are what actually determine the graph structure."""
+    if not isinstance(bi, dict):
+        return None
+    return {k: bi.get(k) for k in
+            ("prompt", "target", "max_feature_nodes", "max_n_logits", "desired_logit_prob")}
+
+
+def _apply_feature_labels(g_json, graph_dir):
+    """Merge the scan's master feature labels (<graph_dir>/feature_labels.json)
+    into the graph's qParams.clerps, so a feature you named in one graph shows up
+    in EVERY graph for this scan (circuit-tracer otherwise saves clerps per-graph).
+    Graph-specific labels win over the master. No-op if the file is absent."""
+    labels_path = Path(graph_dir) / "feature_labels.json"
+    if not labels_path.exists():
+        return
+    try:
+        master = json.loads(labels_path.read_text())
+    except Exception:
+        return
+    qp = g_json.setdefault("qParams", {})
+    existing = {}
+    cl = qp.get("clerps")
+    if cl:
+        try:
+            for e in (json.loads(cl) if isinstance(cl, str) else cl):
+                if isinstance(e, list) and len(e) >= 2:
+                    existing[str(e[0])] = e[1]
+        except Exception:
+            pass
+    merged = {str(k): v for k, v in master if isinstance(master, list)}
+    merged.update(existing)
+    qp["clerps"] = json.dumps([[k, v] for k, v in merged.items()])
+
+
 def build_graph(model_dir, clt_dir, data_dir, scan_name, graph_dir, slug,
                 prompt=None, target=None, device="cpu",
                 max_n_logits=10, desired_logit_prob=0.95,
@@ -155,7 +194,7 @@ def build_graph(model_dir, clt_dir, data_dir, scan_name, graph_dir, slug,
                          "renames": _count("clerps")}
         has_layout = any(layout_counts.values()) or bool(prev_q.get("sg_pos"))
         if has_layout:
-            if prev.get("_buildInputs") == build_inputs:
+            if _identity(prev.get("_buildInputs")) == _identity(build_inputs):
                 saved_qparams = prev_q          # identical graph -> safe to keep
                 graph_status = "reused"
             else:
@@ -185,6 +224,7 @@ def build_graph(model_dir, clt_dir, data_dir, scan_name, graph_dir, slug,
         g_json["qParams"] = saved_qparams
         if verbose:
             print(f"[build] preserved saved viewer layout (qParams) for '{slug}'")
+    _apply_feature_labels(g_json, graph_dir)   # named features show in every graph
     slug_json.write_text(json.dumps(g_json, indent=2))
 
     # Use logit_token_ids (logit_tokens is deprecated in circuit-tracer 0.4.1)

@@ -114,7 +114,12 @@ def setup(args: argparse.Namespace) -> None:
     hf_tokenizer_path = ensure_hf_tokenizer(args.data_dir)
     print(f"[tokenizer] {hf_tokenizer_path}")
 
-    sampler = BioSampler(args.data_dir / "people.json", fields=("birthday",), seed=CLT_SEED)
+    sampler = BioSampler(args.data_dir / "people.json", fields=("birthday",),
+                         seed=CLT_SEED, manifest_path=args.robustness_manifest)
+    if args.robustness_manifest:
+        print(f"[robust]  manifest: {args.robustness_manifest}")
+        print(f"          {len(sampler.limited_people):,} limited people render "
+              f"only their allowed templates (matches robust corpus)")
 
     # Held-out eval slice (seed+1, matches trainSAE.py convention).
     eval_subset = DiverseBioSubset(
@@ -153,7 +158,15 @@ def train_one_run(wandb_config_override: dict | None = None) -> None:
     wandb.agent during a sweep; None for standalone runs."""
     import wandb
 
-    wandb.init(project="interpLM4")
+    # Group: a sweep driver sets CLT_SWEEP_NAME (e.g. clt-L1-H6-robust-sweep) so
+    # all of a model's robust sweep trials cluster together; standalone robust
+    # runs fall back to the shared clt-robust-grid group.
+    group = os.environ.get("CLT_SWEEP_NAME") or (
+        "clt-robust-grid" if ARGS.robustness_manifest else None)
+    wandb.init(project="interpLM4", group=group)
+    if ARGS.robustness_manifest:
+        wandb.config.update({"robustness_manifest": str(ARGS.robustness_manifest)},
+                            allow_val_change=True)
     run_id, run_entity, run_project = wandb.run.id, wandb.run.entity, wandb.run.project
     sweep_id = wandb.run.sweep_id
     cfg = wandb.config
@@ -169,6 +182,13 @@ def train_one_run(wandb_config_override: dict | None = None) -> None:
     sweep_folder = f"sweep-{sweep_id}" if sweep_id else "standalone"
     run_dir = STORAGE_ROOT / "clt_runs" / ARGS.model_name / sweep_folder / name
     final_dir = run_dir / "final"
+
+    # Robust CLTs run standalone (no sweep) -> give them a readable, grep-able
+    # wandb name so all four are identifiable (the group is set at init above).
+    # Assigning run.name persists it on the next sync; do NOT call run.save()
+    # (that needs a glob_str and is for saving files, not the name).
+    if ARGS.robustness_manifest:
+        wandb.run.name = f"{ARGS.model_name}/{name}"
 
     # Build training data.
     train_subset = DiverseBioSubset(
@@ -322,7 +342,7 @@ def build_sweep_config(model_name: str | None = None) -> dict:
     return {
         "program": "trainCLT.py",
         "method":  "grid",
-        "name":    f"clt_sweep_{model_name or ARGS.model_name}",
+        "name":    os.environ.get("CLT_SWEEP_NAME") or f"clt_sweep_{model_name or ARGS.model_name}",
         "metric":  {"name": "final_eval/ce_recovered", "goal": "maximize"},
         # Defaults below are the baked-in grid; each is overridable via an env
         # var (set by scripts/train_clt_psc.sh when OVERRIDE_SWEEP=1). Unset env
@@ -368,6 +388,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--model-name", type=str, default=None,
                    help="Identifier for this base model in output paths. "
                         "Default: parent dir of --model-dir.")
+    p.add_argument("--robustness-manifest", type=Path, default=None,
+                   help="RobustnessTest manifest JSON (data.robustness). When "
+                        "set, limited people's bios render only from their "
+                        "allowed templates, matching the robust training "
+                        "corpus of the base model.")
 
     p.add_argument("--enc-hook-template", type=str,
                    default="blocks.{layer}.hook_resid_mid",

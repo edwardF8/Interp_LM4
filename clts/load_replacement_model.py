@@ -42,13 +42,60 @@ from transformer_lens.loading_from_pretrained import convert_llama_weights  # ty
 from circuit_tracer.replacement_model.replacement_model_transformerlens import (
     TransformerLensReplacementModel,
 )
-from circuit_tracer.transcoder.cross_layer_transcoder import load_clt
+from circuit_tracer.transcoder.cross_layer_transcoder import (
+    CrossLayerTranscoder,
+    load_clt,
+)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from clts.tl_model import build_tl_config  # noqa: E402
 
 DEFAULT_ENC_HOOK = "hook_resid_mid"
 DEFAULT_DEC_HOOK = "hook_mlp_out"
+
+
+# ── circuit-tracer bug patch: CrossLayerTranscoder.compute_reconstruction ────
+# Upstream sizes the reconstruction by `n_pos = pos_ids.max() + 1` — the highest
+# position that has an ACTIVE feature, not the true prompt length. When a prompt's
+# last token(s) fire no CLT features (common on sparse / low-layer CLTs like
+# grid-L1-H6, and on off-distribution prompt endings), the reconstruction comes
+# out one or more positions short, and setup_attribution's
+#   error_vectors = mlp_out_cache - reconstruction
+# blows up with "tensor a (N) vs b (N-1) at non-singleton dimension 1".
+# Fix: take n_pos from `input_acts` (the [n_layers, n_pos, d_model] mlp-in cache,
+# always passed during attribution), so the reconstruction always spans the full
+# sequence. Feature-less positions get just b_dec (+ skip) — exactly what a
+# full-length reconstruction holds there — so the result is unchanged where the
+# original worked. We patch the CLASS (not an instance), so it fixes every model
+# built this session, including ones already constructed.
+def _patched_compute_reconstruction(self, pos_ids, layer_ids, decoder_vectors,
+                                    input_acts=None):
+    n_pos = input_acts.shape[-2] if input_acts is not None else int(pos_ids.max()) + 1
+    flat_idx = layer_ids * n_pos + pos_ids
+    recon = torch.zeros(
+        n_pos * self.n_layers,
+        self.d_model,
+        device=decoder_vectors.device,
+        dtype=decoder_vectors.dtype,
+    ).index_add_(0, flat_idx, decoder_vectors)
+    recon = recon.reshape(self.n_layers, n_pos, self.d_model) + self.b_dec[:, None]
+    if self.W_skip is not None:
+        assert input_acts is not None, (
+            "Transcoder has skip connection but no input_acts were provided"
+        )
+        recon = recon + input_acts @ self.W_skip
+    return recon
+
+
+def _apply_reconstruction_patch():
+    """Install the n_pos fix on CrossLayerTranscoder (idempotent)."""
+    if getattr(CrossLayerTranscoder.compute_reconstruction, "_npos_patched", False):
+        return
+    _patched_compute_reconstruction._npos_patched = True
+    CrossLayerTranscoder.compute_reconstruction = _patched_compute_reconstruction
+
+
+_apply_reconstruction_patch()
 
 
 def _read_hooks(clt_dir: Path) -> tuple[str, str]:
@@ -86,6 +133,7 @@ def load_replacement_model(
         device: torch device string.
         dtype: must be fp32 end-to-end (invariant 5); bf16 diverges.
     """
+    _apply_reconstruction_patch()   # ensure the n_pos fix is live for this build
     model_dir, clt_dir = Path(model_dir), Path(clt_dir)
 
     hf_model = LlamaForCausalLM.from_pretrained(model_dir, torch_dtype=dtype).eval()

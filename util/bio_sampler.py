@@ -31,6 +31,7 @@ class BioSampler:
         people_path: str | Path,
         fields: tuple[str, ...] = ("birthday",),
         seed: int | None = None,
+        manifest_path: str | Path | None = None,
     ):
         with open(people_path) as f:
             self.people: list[dict] = json.load(f)
@@ -42,8 +43,31 @@ class BioSampler:
         # uniformly over [0, n_templates) hits every template at least once.
         self.n_templates = max(len(FIELD_SPECS[f]["templates"]) for f in self.fields)
 
+        # RobustnessTest support: with a manifest, limited people render only
+        # from their allowed templates — exposure e -> allowed[e % len(allowed)],
+        # the same rule as data.robustness.robust_bio_stream, so rendered text
+        # matches the robust training corpus. The manifest is keyed by
+        # people-list INDEX (person["id"] differs), hence the id->index map.
+        self.limited_people: dict[int, dict] = {}
+        self._idx_by_id: dict = {}
+        self._render_limited = None
+        if manifest_path is not None:
+            from data.robustness import load_manifest, render_bio_limited
+            self.limited_people = load_manifest(manifest_path)["limited_people"]
+            self._idx_by_id = {p["id"]: i for i, p in enumerate(self.people)}
+            self._render_limited = render_bio_limited
+
     def render(self, person: dict, exposure_idx: int = 0) -> str:
-        """Render the bio for `person` using template index `exposure_idx`."""
+        """Render the bio for `person` using template index `exposure_idx`.
+
+        With a robustness manifest loaded, a limited person's exposure_idx is
+        remapped into their allowed-template subset instead.
+        """
+        if self.limited_people:
+            subs = self.limited_people.get(self._idx_by_id.get(person["id"], -1))
+            if subs is not None:
+                tidx = {f: subs[f][exposure_idx % len(subs[f])] for f in self.fields}
+                return self._render_limited(person, tidx, self.fields)
         return render_bio(person, exposure_idx, self.fields)
 
     def sample(self, rng: random.Random | None = None) -> dict:

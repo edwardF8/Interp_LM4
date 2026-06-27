@@ -25,9 +25,26 @@ set -euo pipefail
 # --- what to train on -------------------------------------------------------
 MODEL_NAME="${MODEL_NAME:-grid-L1-H6}"   # base model identifier (and output subdir); override via env (see submit_clt_sweeps_grid.sh)
 REMOTE_BASE="/jet/home/friedmae/data_storage/LM4_Results"
-GRID="$REMOTE_BASE/runResults/bioS_N-Bd_final_grid/20260520-134455/grid"
-MODEL_DIR="$GRID/$MODEL_NAME/final"               # HF checkpoint dir
-DATA_DIR="$REMOTE_BASE/Data/bioS_N-Bd_final_grid" # has people.json + old_to_new.json
+GRID="${GRID:-$REMOTE_BASE/runResults/bioS_N-Bd_final_grid/20260520-134455/grid}"
+MODEL_DIR="${MODEL_DIR:-$GRID/$MODEL_NAME/final}"               # HF checkpoint dir
+DATA_DIR="${DATA_DIR:-$REMOTE_BASE/Data/bioS_N-Bd_final_grid}" # has people.json + old_to_new.json
+
+# Optional: RobustnessTest manifest. When set, limited people's CLT training
+# bios render only from their allowed templates -- matching the robust corpus
+# the base model was trained on (see submit_clt_robust_grid.sh).
+ROBUSTNESS_MANIFEST="${ROBUSTNESS_MANIFEST:-}"
+ROBUST_ARGS=()
+[ -n "$ROBUSTNESS_MANIFEST" ] && ROBUST_ARGS=(--robustness-manifest "$ROBUSTNESS_MANIFEST")
+
+# Optional: resolve MODEL_DIR at RUNTIME from a glob (newest match wins).
+# Lets a driver submit dependency-held jobs before the checkpoint exists --
+# e.g. CLTs on the robust grid, whose runs/<INVOCATION>/ dir isn't known
+# until the training job actually starts (see submit_clt_robust_grid.sh).
+if [ -n "${MODEL_DIR_GLOB:-}" ]; then
+    MODEL_DIR=$(ls -1dt $MODEL_DIR_GLOB 2>/dev/null | head -1 || true)
+    [ -n "$MODEL_DIR" ] || { echo "ERROR: MODEL_DIR_GLOB matched nothing: $MODEL_DIR_GLOB" >&2; exit 1; }
+    echo "MODEL_DIR (newest glob match) = $MODEL_DIR"
+fi
 
 # --- CLT activation sites ({layer} is filled in for EVERY block) ------------
 # A CLT spans all layers at once; there is no single layer to pick. Change the
@@ -124,6 +141,9 @@ for p in "$MODEL_DIR/config.json" "$DATA_DIR/people.json" "$DATA_DIR/old_to_new.
          clts/trainCLT.py; do
     [ -e "$p" ] || { echo "  MISSING: $p" >&2; fail=1; }
 done
+if [ -n "$ROBUSTNESS_MANIFEST" ] && [ ! -e "$ROBUSTNESS_MANIFEST" ]; then
+    echo "  MISSING: $ROBUSTNESS_MANIFEST" >&2; fail=1
+fi
 # trainCLT.py always calls wandb.init (sweeps AND single runs), so always check.
 if ! grep -q "api.wandb.ai" "${HOME}/.netrc" 2>/dev/null && [ -z "${WANDB_API_KEY:-}" ]; then
     echo "  wandb not authenticated: run \`wandb login\`, or set WANDB_API_KEY" >&2
@@ -151,6 +171,7 @@ if [ -n "${AGENT_SWEEP_ID:-}" ]; then
     "$PY" -u clts/trainCLT.py \
         --model-dir "$MODEL_DIR" --data-dir "$DATA_DIR" --model-name "$MODEL_NAME" \
         --enc-hook-template "$ENC_HOOK" --dec-hook-template "$DEC_HOOK" \
+        ${ROBUST_ARGS[@]+"${ROBUST_ARGS[@]}"} \
         --agent "$AGENT_SWEEP_ID" --count "${AGENT_COUNT:-1}"
     echo "Finished agent: $(date)"
     echo "Sweep runs under: $CLT_STORAGE_ROOT/clt_runs/$MODEL_NAME/sweep-$AGENT_SWEEP_ID/"
@@ -177,6 +198,7 @@ cmd=("$PY" -u clts/trainCLT.py
     --context-size "$CONTEXT_SIZE"
     --n-examples "$N_EXAMPLES")
 [ "$SWEEP" = 1 ] && cmd+=(--sweep)
+[ -n "$ROBUSTNESS_MANIFEST" ] && cmd+=(--robustness-manifest "$ROBUSTNESS_MANIFEST")
 
 "${cmd[@]}"
 
