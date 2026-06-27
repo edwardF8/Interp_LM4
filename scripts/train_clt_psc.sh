@@ -64,6 +64,23 @@ EXPANSION="${EXPANSION:-16}"         # d_transcoder = EXPANSION * d_model
 L0="${L0:-5.0}"                      # sparsity (L0) coefficient
 LR="${LR:-5e-5}"                     # learning rate
 
+# --- edit-CLT add-on (opt-in; unset -> legacy behavior) ---------------------
+RESUME_FROM="${RESUME_FROM:-}"            # final/ dir of a CLT to fine-tune from
+OUT_TAG="${OUT_TAG:-}"                     # run-path folder (variant disambiguator)
+TARGET_CE_RECOVERED="${TARGET_CE_RECOVERED:-}"
+PLATEAU_PATIENCE="${PLATEAU_PATIENCE:-}"
+PLATEAU_MIN_DELTA="${PLATEAU_MIN_DELTA:-}"
+EVAL_EVERY="${EVAL_EVERY:-}"
+ANCHOR_LAMBDA="${ANCHOR_LAMBDA:-}"
+ADDON_ARGS=()
+[ -n "$RESUME_FROM" ]         && ADDON_ARGS+=(--resume-from "$RESUME_FROM")
+[ -n "$OUT_TAG" ]             && ADDON_ARGS+=(--out-tag "$OUT_TAG")
+[ -n "$TARGET_CE_RECOVERED" ] && ADDON_ARGS+=(--target-ce-recovered "$TARGET_CE_RECOVERED")
+[ -n "$PLATEAU_PATIENCE" ]    && ADDON_ARGS+=(--plateau-patience "$PLATEAU_PATIENCE")
+[ -n "$PLATEAU_MIN_DELTA" ]   && ADDON_ARGS+=(--plateau-min-delta "$PLATEAU_MIN_DELTA")
+[ -n "$EVAL_EVERY" ]          && ADDON_ARGS+=(--eval-every "$EVAL_EVERY")
+[ -n "$ANCHOR_LAMBDA" ]       && ADDON_ARGS+=(--anchor-lambda "$ANCHOR_LAMBDA")
+
 # === SECTION B: sweep grid (used when SWEEP=1) ==============================
 # OVERRIDE_SWEEP=0 -> run the baked-in grid (expansion {4,8,16,32} x l0 {1,2,5},
 # lr 1e-4, n_examples 50000, epochs 10) and IGNORE the values below.
@@ -144,6 +161,9 @@ done
 if [ -n "$ROBUSTNESS_MANIFEST" ] && [ ! -e "$ROBUSTNESS_MANIFEST" ]; then
     echo "  MISSING: $ROBUSTNESS_MANIFEST" >&2; fail=1
 fi
+if [ -n "$RESUME_FROM" ] && [ ! -e "$RESUME_FROM/config.yaml" ]; then
+    echo "  MISSING (resume): $RESUME_FROM/config.yaml" >&2; fail=1
+fi
 # trainCLT.py always calls wandb.init (sweeps AND single runs), so always check.
 if ! grep -q "api.wandb.ai" "${HOME}/.netrc" 2>/dev/null && [ -z "${WANDB_API_KEY:-}" ]; then
     echo "  wandb not authenticated: run \`wandb login\`, or set WANDB_API_KEY" >&2
@@ -196,7 +216,8 @@ cmd=("$PY" -u clts/trainCLT.py
     --lr "$LR"
     --epochs "$EPOCHS"
     --context-size "$CONTEXT_SIZE"
-    --n-examples "$N_EXAMPLES")
+    --n-examples "$N_EXAMPLES"
+    ${ADDON_ARGS[@]+"${ADDON_ARGS[@]}"})
 [ "$SWEEP" = 1 ] && cmd+=(--sweep)
 [ -n "$ROBUSTNESS_MANIFEST" ] && cmd+=(--robustness-manifest "$ROBUSTNESS_MANIFEST")
 
