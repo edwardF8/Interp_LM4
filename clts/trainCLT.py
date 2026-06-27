@@ -153,6 +153,44 @@ def trial_name(expansion: int, l0_coefficient: float, lr: float,
     return f"mult{expansion}_l0{l0_coefficient:g}_lr{lr:g}_ep{epochs}_n{n_examples}"
 
 
+def _run_dir(storage_root, model_name, name, out_tag=None, sweep_id=None):
+    """Resolve the run directory. out_tag (when set) replaces the
+    standalone/sweep folder so Method-2 variants sharing a trial name don't
+    collide. Mirrors the legacy layout otherwise."""
+    folder = out_tag or (f"sweep-{sweep_id}" if sweep_id else "standalone")
+    return storage_root / "clt_runs" / model_name / folder / name
+
+
+def _should_stop(history, target=None, patience=None, min_delta=None):
+    """Early-stop decision for resume/fine-tune runs. `history` is the monitored
+    metric (ce_recovered) in eval order, higher = better.
+    - parity: latest >= target
+    - plateau: the last `patience` gains are each < min_delta
+    Returns (stop, reason)."""
+    if not history:
+        return (False, None)
+    if target is not None and history[-1] >= target:
+        return (True, "parity")
+    if patience is not None and min_delta is not None and len(history) > patience:
+        recent = history[-(patience + 1):]
+        gains = [recent[i + 1] - recent[i] for i in range(len(recent) - 1)]
+        if all(g < min_delta for g in gains):
+            return (True, "plateau")
+    return (False, None)
+
+
+def _anchor_penalty(clt, base_params, lam):
+    """L2 proximity penalty pulling CLT params toward `base_params` (a snapshot
+    of the resumed checkpoint). Returns a 0-d tensor; exactly 0 when lam == 0."""
+    dev = next(clt.parameters()).device
+    if not lam:
+        return torch.zeros((), device=dev)
+    total = torch.zeros((), device=dev)
+    for name, p in clt.named_parameters():
+        total = total + (p - base_params[name]).pow(2).sum()
+    return lam * total
+
+
 def train_one_run(wandb_config_override: dict | None = None) -> None:
     """One CLT training run end-to-end. wandb_config_override comes from
     wandb.agent during a sweep; None for standalone runs."""
@@ -179,8 +217,8 @@ def train_one_run(wandb_config_override: dict | None = None) -> None:
     context_size   = cfg.get("context_size",   ARGS.context_size)
 
     name = trial_name(expansion, l0_coefficient, lr, epochs, n_examples)
-    sweep_folder = f"sweep-{sweep_id}" if sweep_id else "standalone"
-    run_dir = STORAGE_ROOT / "clt_runs" / ARGS.model_name / sweep_folder / name
+    run_dir = _run_dir(STORAGE_ROOT, ARGS.model_name, name,
+                       out_tag=getattr(ARGS, "out_tag", None), sweep_id=sweep_id)
     final_dir = run_dir / "final"
 
     # Robust CLTs run standalone (no sweep) -> give them a readable, grep-able
@@ -204,11 +242,24 @@ def train_one_run(wandb_config_override: dict | None = None) -> None:
     print(f"          training tokens={n_tokens:,}, steps={total_steps:,}, "
           f"l0_warmup={l0_warmup}, lr_warmup={lr_warmup}")
 
-    # Build CLT.
-    clt = CrossLayerTranscoder(
-        n_layers=model.cfg.n_layers, d_model=model.cfg.d_model, expansion=expansion,
-    ).to(device)
+    # Build CLT — fresh, or resumed from a checkpoint (Method 2 fine-tune).
+    resume_from = getattr(ARGS, "resume_from", None)
+    if resume_from:
+        clt = CrossLayerTranscoder.load_from_dir(resume_from).to(device)
+        assert clt.n_layers == model.cfg.n_layers and clt.d_model == model.cfg.d_model \
+            and clt.d_transcoder == expansion * model.cfg.d_model, \
+            f"resumed CLT {clt.n_layers}x{clt.d_model}x{clt.d_transcoder} != " \
+            f"model {model.cfg.n_layers}x{model.cfg.d_model} exp{expansion}"
+        print(f"[resume]  loaded CLT from {resume_from}")
+    else:
+        clt = CrossLayerTranscoder(
+            n_layers=model.cfg.n_layers, d_model=model.cfg.d_model, expansion=expansion,
+        ).to(device)
+    anchor_lambda = float(getattr(ARGS, "anchor_lambda", 0.0) or 0.0)
+    base_params = ({n: p.detach().clone() for n, p in clt.named_parameters()}
+                  if anchor_lambda else None)
     opt = torch.optim.Adam(clt.parameters(), lr=lr, betas=(0.9, 0.999))
+    ce_history = []
 
     # Token-batch iterator. Yields [B, T] slices, looping over training_tokens.
     rows_per_batch = max(1, BATCH_SIZE // context_size)
@@ -221,7 +272,7 @@ def train_one_run(wandb_config_override: dict | None = None) -> None:
 
     step = 0
     LOG_EVERY = 30
-    EVAL_EVERY = 600
+    EVAL_EVERY = getattr(ARGS, "eval_every", None) or 600
 
     for batch_tokens in token_batches():
         # Capture activations from the frozen base model.
@@ -241,8 +292,10 @@ def train_one_run(wandb_config_override: dict | None = None) -> None:
             g["lr"] = lr * lr_ramp
 
         losses = clt.compute_loss(x_list, y_list, l0_coefficient=lam)
+        loss = losses["total"] + _anchor_penalty(clt, base_params, anchor_lambda) \
+            if base_params is not None else losses["total"]
         opt.zero_grad(set_to_none=True)
-        losses["total"].backward()
+        loss.backward()
         opt.step()
 
         if step % LOG_EVERY == 0:
@@ -272,6 +325,19 @@ def train_one_run(wandb_config_override: dict | None = None) -> None:
                 {f"clt_eval/{k}": v for k, v in {**metrics, **ce}.items()},
                 step=step,
             )
+            ce_history.append(ce["ce_recovered"])
+            stop, reason = _should_stop(
+                ce_history,
+                target=getattr(ARGS, "target_ce_recovered", None),
+                patience=getattr(ARGS, "plateau_patience", None),
+                min_delta=getattr(ARGS, "plateau_min_delta", None),
+            )
+            if stop:
+                print(f"[early-stop] {reason} at step {step}, "
+                      f"ce_recovered={ce['ce_recovered']:.4f}")
+                wandb.log({"early_stop/reason": reason,
+                           "early_stop/step": step}, step=step)
+                break
 
         step += 1
 
@@ -376,7 +442,7 @@ def _patch_signal_for_worker_threads():
 # CLI
 # ============================================================================
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv=None) -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -434,7 +500,26 @@ def parse_args() -> argparse.Namespace:
                    help="Max trials this agent runs before exiting "
                         "(wandb.agent count). Use --count 1 for one-trial-per-task.")
 
-    return p.parse_args()
+    # --- edit-CLT add-on (opt-in; defaults preserve legacy behavior) ----------
+    p.add_argument("--resume-from", type=Path, default=None,
+                   help="Load CLT weights from this final/ dir instead of fresh "
+                        "init (Method 2 fine-tune).")
+    p.add_argument("--out-tag", type=str, default=None,
+                   help="Replace the standalone/sweep folder in the run path "
+                        "(disambiguates fine-tune variants).")
+    p.add_argument("--target-ce-recovered", type=float, default=None,
+                   help="Early-stop once eval ce_recovered >= this value.")
+    p.add_argument("--plateau-patience", type=int, default=None,
+                   help="Early-stop after this many consecutive sub-threshold "
+                        "eval gains (needs --plateau-min-delta).")
+    p.add_argument("--plateau-min-delta", type=float, default=None,
+                   help="Min ce_recovered gain per eval to count as progress.")
+    p.add_argument("--eval-every", type=int, default=None,
+                   help="Override EVAL_EVERY (default 600) for fine eval cadence.")
+    p.add_argument("--anchor-lambda", type=float, default=0.0,
+                   help="L2 proximity penalty toward the resumed checkpoint.")
+
+    return p.parse_args(argv)
 
 
 def main():
