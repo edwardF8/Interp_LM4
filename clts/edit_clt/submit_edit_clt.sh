@@ -8,6 +8,7 @@ set -euo pipefail
 
 TEST=0; [ "${1:-}" = "--test" ] && TEST=1
 cd "$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+mkdir -p logs
 
 # ---- experiment paths (edit to match your manifest) ------------------------
 REMOTE_BASE="/jet/home/friedmae/data_storage/LM4_Results"

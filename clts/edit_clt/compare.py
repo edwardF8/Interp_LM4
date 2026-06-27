@@ -57,6 +57,14 @@ def feature_diff_table(graphs: dict, baseline_key="baseline_orig") -> pd.DataFra
     rows = {}
     for key, g in graphs.items():
         o = drift.active_feature_overlap(base, g)
-        rows[key] = {"jaccard": o["jaccard"], "n_features": o["n_b"],
-                     "appeared": o["appeared"], "disappeared": o["disappeared"]}
+        # From-scratch CLTs (m1_*) have independent feature indices, so an
+        # index-wise diff vs. the baseline is meaningless — report counts only.
+        index_comparable = not key.startswith("m1")
+        rows[key] = {
+            "n_features": o["n_b"],
+            "jaccard": o["jaccard"] if index_comparable else None,
+            "appeared": o["appeared"] if index_comparable else None,
+            "disappeared": o["disappeared"] if index_comparable else None,
+            "index_comparable": index_comparable,
+        }
     return pd.DataFrame.from_dict(rows, orient="index")

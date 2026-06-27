@@ -1,3 +1,4 @@
+import pandas as pd
 import torch
 from clts.edit_clt import compare
 
@@ -53,3 +54,15 @@ def test_feature_diff_table_against_baseline():
     assert df.loc["m3_stale", "disappeared"] == 1
     # baseline row vs itself is trivial
     assert df.loc["baseline_orig", "jaccard"] == 1.0
+
+
+def test_feature_diff_table_flags_from_scratch_m1():
+    graphs = {
+        "baseline_orig": _FakeGraph([[0, 1, 10], [1, 1, 20]]),
+        "m1_scratch": _FakeGraph([[0, 1, 10], [1, 1, 99]]),
+    }
+    df = compare.feature_diff_table(graphs, baseline_key="baseline_orig")
+    assert df.loc["m1_scratch", "index_comparable"] == False
+    assert pd.isna(df.loc["m1_scratch", "jaccard"])
+    assert df.loc["m1_scratch", "n_features"] == 2          # counts still reported
+    assert df.loc["baseline_orig", "index_comparable"] == True

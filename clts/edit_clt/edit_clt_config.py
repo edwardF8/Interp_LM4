@@ -4,7 +4,7 @@ so it imports in both the training and circuit-tracer envs."""
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field
 from pathlib import Path
 
 _MONTH_ABBR = {
