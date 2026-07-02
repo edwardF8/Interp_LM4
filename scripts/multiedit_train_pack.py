@@ -63,7 +63,9 @@ def main():
 
     jobs = [json.loads(ln) for ln in open(a.jobs) if ln.strip()]
     if a.test:
-        mine = [dict(jobs[0], EPOCHS="1", N_EXAMPLES="200", EVAL_EVERY="50")]   # 1 quick train gates main
+        # scratch (jobs[0]) + a fine-tune (jobs[1], exercises --resume-from/--eval-person/parity),
+        # both at a tiny budget — this gates the main run.
+        mine = [dict(j, EPOCHS="1", N_EXAMPLES="200", EVAL_EVERY="50") for j in jobs[:2]]
     else:
         mine = jobs[a.shard::a.num_shards]
     Path("logs").mkdir(exist_ok=True)
