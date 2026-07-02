@@ -27,6 +27,7 @@ REMOTE_BASE="${REMOTE_BASE:-/jet/home/friedmae/data_storage/LM4_Results}"
 JOBS="${JOBS:?set JOBS=/path/to/train_jobs.jsonl}"
 NUM_SHARDS="${NUM_SHARDS:-${SLURM_ARRAY_TASK_COUNT:-6}}"
 CONCURRENCY="${CONCURRENCY:-4}"          # trains packed per GPU (raise if VRAM allows)
+TEST="${TEST:-0}"                        # 1 = smoke (first job, tiny budget) — gates the main run
 CONDA_ENV="${CONDA_ENV:-lm4-ct}"
 DATA_DIR="${DATA_DIR:-$REMOTE_BASE/Data/bioS_N-Bd_final_grid}"
 
@@ -41,8 +42,10 @@ export CLT_STORAGE_ROOT="$REMOTE_BASE"
 
 echo "=== multiedit pack: shard ${SLURM_ARRAY_TASK_ID:-0}/$NUM_SHARDS conc=$CONCURRENCY on $(hostname) ==="
 date; nvidia-smi || true
+TEST_ARG=(); [ "$TEST" = 1 ] && TEST_ARG=(--test)
 "$PY" -u scripts/multiedit_train_pack.py --jobs "$JOBS" \
     --shard "${SLURM_ARRAY_TASK_ID:-0}" --num-shards "$NUM_SHARDS" \
     --concurrency "$CONCURRENCY" --py "$PY" \
-    --storage-root "$REMOTE_BASE" --data-dir "$DATA_DIR"
+    --storage-root "$REMOTE_BASE" --data-dir "$DATA_DIR" \
+    ${TEST_ARG[@]+"${TEST_ARG[@]}"}
 echo "Finished shard ${SLURM_ARRAY_TASK_ID:-0}: $(date)"

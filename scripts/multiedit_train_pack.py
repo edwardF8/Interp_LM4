@@ -50,6 +50,8 @@ def main():
     ap.add_argument("--shard", type=int, default=0)
     ap.add_argument("--num-shards", type=int, default=1)
     ap.add_argument("--concurrency", type=int, default=4)
+    ap.add_argument("--test", action="store_true",
+                    help="smoke: FIRST job only, tiny budget (EPOCHS=1, N_EXAMPLES=200) — gates the main run")
     ap.add_argument("--py", default=sys.executable)
     ap.add_argument("--storage-root",
                     default=os.environ.get("CLT_STORAGE_ROOT",
@@ -60,7 +62,10 @@ def main():
     a = ap.parse_args()
 
     jobs = [json.loads(ln) for ln in open(a.jobs) if ln.strip()]
-    mine = jobs[a.shard::a.num_shards]
+    if a.test:
+        mine = [dict(jobs[0], EPOCHS="1", N_EXAMPLES="200", EVAL_EVERY="50")]   # 1 quick train gates main
+    else:
+        mine = jobs[a.shard::a.num_shards]
     Path("logs").mkdir(exist_ok=True)
     print(f"[pack] shard {a.shard}/{a.num_shards}: {len(mine)} jobs, "
           f"concurrency={a.concurrency}, storage={a.storage_root}", flush=True)
