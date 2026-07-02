@@ -223,5 +223,35 @@ cmd=("$PY" -u clts/trainCLT.py
 
 "${cmd[@]}"
 
+# ---- optional: feature dashboards for the CLT we just trained (opt-in) ------
+# WRITE_DASHBOARDS=1 (single runs only) -> right after training, build the
+# circuit-tracer viewer's per-feature dashboards on THIS model + the CLT just
+# written, into $FEATURES_ROOT/$DASH_SCAN. gen_feature_dashboards.py needs only
+# the training env (no circuit_tracer), so it runs in this same job/env. Used by
+# the edit-CLT pipeline (submit_edit_clt.sh) so the m1/m2 CLTs get the bottom-panel
+# dashboards Notebook 2's viewer shows. A failure here does NOT fail the job --
+# the CLT is already saved; rerun gen_feature_dashboards.py to retry.
+if [ "${WRITE_DASHBOARDS:-0}" = 1 ] && [ "$SWEEP" = 0 ]; then
+    DASH_SCAN="${DASH_SCAN:-$MODEL_NAME}"
+    FEATURES_ROOT="${FEATURES_ROOT:-$CLT_STORAGE_ROOT/clt_features}"
+    DASH_N_PEOPLE="${DASH_N_PEOPLE:-1000}"   # corpus size (cost knob); empty = all people
+    DASH_DEVICE="${DASH_DEVICE:-cuda}"
+    # The just-written CLT: clt_runs/<model>/<out_tag|standalone>/<trial>/final (newest).
+    _clt_final=$(ls -1dt "$CLT_STORAGE_ROOT/clt_runs/$MODEL_NAME/${OUT_TAG:-standalone}"/*/final 2>/dev/null | head -1 || true)
+    if [ -z "$_clt_final" ]; then
+        echo "WARNING: WRITE_DASHBOARDS=1 but no trained CLT under" \
+             "$CLT_STORAGE_ROOT/clt_runs/$MODEL_NAME/${OUT_TAG:-standalone}/*/final -- skipping dashboards" >&2
+    else
+        echo "=== feature dashboards: $_clt_final -> $FEATURES_ROOT/$DASH_SCAN (device=$DASH_DEVICE) ==="
+        _people_args=(); [ -n "$DASH_N_PEOPLE" ] && _people_args=(--n-people "$DASH_N_PEOPLE")
+        "$PY" -u clts/gen_feature_dashboards.py \
+            --model-dir "$MODEL_DIR" --clt-dir "$_clt_final" --data-dir "$DATA_DIR" \
+            --scan-name "$DASH_SCAN" --features-root "$FEATURES_ROOT" \
+            --device "$DASH_DEVICE" "${_people_args[@]}" \
+            && echo "dashboards under: $FEATURES_ROOT/$DASH_SCAN" \
+            || echo "WARNING: dashboard generation failed (CLT is saved; rerun gen_feature_dashboards.py)" >&2
+    fi
+fi
+
 echo "Finished: $(date)"
 echo "Runs under: $CLT_STORAGE_ROOT/clt_runs/$MODEL_NAME/"
