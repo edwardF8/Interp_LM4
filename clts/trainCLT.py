@@ -31,6 +31,7 @@ from clts.export_tokenizer import ensure_hf_tokenizer  # noqa: E402
 from util.bio_sampler import BioSampler  # noqa: E402
 from util.condensed_tokenizer import CondensedTokenizer  # noqa: E402
 from util.diverse_subset import DiverseBioSubset  # noqa: E402
+from util.person_eval import build_eval_rows  # noqa: E402
 
 
 # ============================================================================
@@ -122,14 +123,22 @@ def setup(args: argparse.Namespace) -> None:
               f"only their allowed templates (matches robust corpus)")
 
     # Held-out eval slice (seed+1, matches trainSAE.py convention).
-    eval_subset = DiverseBioSubset(
-        sampler, tokenizer, context_size=args.context_size, seed=CLT_SEED + 1
+    # --eval-person k (opt-in) swaps the global 64-row eval for person k's bios
+    # rotated over all templates, so ce_recovered -- and the parity/plateau
+    # early-stop it drives -- becomes LOCAL to the edited person (an edit-CLT
+    # fine-tune's stop signal). Default None -> byte-identical global eval.
+    # See util/person_eval.py.
+    eval_rows = build_eval_rows(
+        sampler, tokenizer, context_size=args.context_size,
+        seed=CLT_SEED + 1, eval_person=args.eval_person,
     )
-    eval_rows = eval_subset.to_hf_dataset(64, verbose=False)["input_ids"]
-    eval_tokens = torch.tensor(np.array(eval_rows), dtype=torch.long, device=device)
+    eval_tokens = torch.tensor(eval_rows, dtype=torch.long, device=device)
     print(f"[data]    {args.data_dir}")
     print(f"          {len(sampler.people):,} people, {sampler.n_templates} templates, "
           f"eval tokens: {tuple(eval_tokens.shape)}")
+    if args.eval_person is not None:
+        print(f"[eval-person] LOCAL eval on person {args.eval_person} "
+              f"({tuple(eval_tokens.shape)} over all {sampler.n_templates} templates)")
 
     # Section 2 coverage check: exposures per person at current --n-examples.
     train_subset = DiverseBioSubset(sampler, tokenizer, context_size=args.context_size, seed=CLT_SEED)
@@ -518,6 +527,14 @@ def parse_args(argv=None) -> argparse.Namespace:
                    help="Override EVAL_EVERY (default 600) for fine eval cadence.")
     p.add_argument("--anchor-lambda", type=float, default=0.0,
                    help="L2 proximity penalty toward the resumed checkpoint.")
+    p.add_argument("--eval-person", type=int, default=None,
+                   help="Compute the periodic + final eval (ce_recovered, and "
+                        "the --target-ce-recovered / --plateau-* early-stops it "
+                        "drives) on ONE person's bios instead of the global "
+                        "held-out slice. Value is a 0-based index into "
+                        "people.json; the person's bios render over all "
+                        "templates via the same sampler. Default None -> "
+                        "unchanged global eval (edit-CLT local-parity stop).")
 
     return p.parse_args(argv)
 

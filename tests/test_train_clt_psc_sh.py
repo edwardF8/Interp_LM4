@@ -13,7 +13,8 @@ def test_script_threads_addon_env_vars():
     text = SH.read_text()
     for token in ("RESUME_FROM", "TARGET_CE_RECOVERED", "PLATEAU_PATIENCE",
                   "PLATEAU_MIN_DELTA", "OUT_TAG", "ANCHOR_LAMBDA", "EVAL_EVERY",
+                  "EVAL_PERSON",
                   "--resume-from", "--out-tag", "--target-ce-recovered",
                   "--plateau-patience", "--plateau-min-delta", "--eval-every",
-                  "--anchor-lambda"):
+                  "--anchor-lambda", "--eval-person"):
         assert token in text, f"missing {token}"

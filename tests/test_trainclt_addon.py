@@ -60,3 +60,11 @@ def test_new_flags_default_off():
     assert args.plateau_min_delta is None
     assert args.eval_every is None
     assert args.anchor_lambda == 0.0
+    assert args.eval_person is None
+
+
+def test_eval_person_flag_parses():
+    args = trainCLT.parse_args(
+        ["--model-dir", "x", "--data-dir", "y", "--eval-person", "42"]
+    )
+    assert args.eval_person == 42

@@ -72,6 +72,7 @@ PLATEAU_PATIENCE="${PLATEAU_PATIENCE:-}"
 PLATEAU_MIN_DELTA="${PLATEAU_MIN_DELTA:-}"
 EVAL_EVERY="${EVAL_EVERY:-}"
 ANCHOR_LAMBDA="${ANCHOR_LAMBDA:-}"
+EVAL_PERSON="${EVAL_PERSON:-}"            # 0-based people.json index: eval ce_recovered on THIS person only (local-parity stop)
 ADDON_ARGS=()
 [ -n "$RESUME_FROM" ]         && ADDON_ARGS+=(--resume-from "$RESUME_FROM")
 [ -n "$OUT_TAG" ]             && ADDON_ARGS+=(--out-tag "$OUT_TAG")
@@ -80,6 +81,7 @@ ADDON_ARGS=()
 [ -n "$PLATEAU_MIN_DELTA" ]   && ADDON_ARGS+=(--plateau-min-delta "$PLATEAU_MIN_DELTA")
 [ -n "$EVAL_EVERY" ]          && ADDON_ARGS+=(--eval-every "$EVAL_EVERY")
 [ -n "$ANCHOR_LAMBDA" ]       && ADDON_ARGS+=(--anchor-lambda "$ANCHOR_LAMBDA")
+[ -n "$EVAL_PERSON" ]         && ADDON_ARGS+=(--eval-person "$EVAL_PERSON")
 
 # === SECTION B: sweep grid (used when SWEEP=1) ==============================
 # OVERRIDE_SWEEP=0 -> run the baked-in grid (expansion {4,8,16,32} x l0 {1,2,5},
@@ -163,6 +165,9 @@ if [ -n "$ROBUSTNESS_MANIFEST" ] && [ ! -e "$ROBUSTNESS_MANIFEST" ]; then
 fi
 if [ -n "$RESUME_FROM" ] && [ ! -e "$RESUME_FROM/config.yaml" ]; then
     echo "  MISSING (resume): $RESUME_FROM/config.yaml" >&2; fail=1
+fi
+if [ -n "$EVAL_PERSON" ] && ! [[ "$EVAL_PERSON" =~ ^[0-9]+$ ]]; then
+    echo "  EVAL_PERSON must be a non-negative integer (people.json index): $EVAL_PERSON" >&2; fail=1
 fi
 # trainCLT.py always calls wandb.init (sweeps AND single runs), so always check.
 if ! grep -q "api.wandb.ai" "${HOME}/.netrc" 2>/dev/null && [ -z "${WANDB_API_KEY:-}" ]; then
